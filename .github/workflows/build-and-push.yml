@@ -23,7 +23,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: broadsage/alpine
+  IMAGE_NAME: broadsage-containers/alpine
 
 jobs:
   detect-versions:
