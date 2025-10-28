@@ -1,0 +1,73 @@
+name: Update Alpine Releases
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    outputs:
+      edge_updated: ${{ steps.check.outputs.edge_updated }}
+      versions_updated: ${{ steps.check.outputs.versions_updated }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check for updates
+        id: check
+        run: |
+          chmod +x prepare-branch.sh
+          
+          # Check edge
+          EDGE_UPDATED="false"
+          if [ -d "edge" ]; then
+            CURRENT_EDGE_VERSION=$(cat edge/VERSION 2>/dev/null || echo "0")
+            # Try to prepare edge
+            if ./prepare-branch.sh prepare edge 2>&1 | tee /tmp/edge-prepare.log; then
+              TEMP_DIR=$(ls -dt ~/.cache/docker-brew-alpine-* 2>/dev/null | head -1 || ls -dt /tmp/docker-brew-alpine-* 2>/dev/null | head -1)
+              if [ -n "$TEMP_DIR" ] && [ -f "$TEMP_DIR/VERSION" ]; then
+                NEW_EDGE_VERSION=$(cat "$TEMP_DIR/VERSION")
+                if [ "$CURRENT_EDGE_VERSION" != "$NEW_EDGE_VERSION" ]; then
+                  echo "Edge updated from $CURRENT_EDGE_VERSION to $NEW_EDGE_VERSION"
+                  EDGE_UPDATED="true"
+                fi
+                rm -rf "$TEMP_DIR"
+              fi
+            fi
+          fi
+          echo "edge_updated=${EDGE_UPDATED}" >> $GITHUB_OUTPUT
+          
+          # Check for new stable versions
+          VERSIONS_UPDATED="false"
+          # This is a placeholder - in production, you'd check Alpine's release API
+          echo "versions_updated=${VERSIONS_UPDATED}" >> $GITHUB_OUTPUT
+
+  update-edge:
+    needs: check-updates
+    if: needs.check-updates.outputs.edge_updated == 'true'
+    uses: ./.github/workflows/prepare-release.yml
+    with:
+      branch: edge
+      create_pr: true
+    secrets: inherit
+
+  notify:
+    needs: [check-updates, update-edge]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        run: |
+          echo "## Alpine Update Check Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Edge updated: ${{ needs.check-updates.outputs.edge_updated }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Versions updated: ${{ needs.check-updates.outputs.versions_updated }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check completed at $(date -u)" >> $GITHUB_STEP_SUMMARY

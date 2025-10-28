@@ -1,0 +1,249 @@
+name: Build and Push Alpine Images
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'edge/**'
+      - '3.*/**'
+      - '.github/workflows/build-and-push.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'edge/**'
+      - '3.*/**'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Alpine version to build (e.g., edge, 3.19.9)'
+        required: false
+        default: 'all'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  detect-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.get-versions.outputs.versions }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect Alpine versions
+        id: get-versions
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.version }}" != "all" ]; then
+            # Build specific version from workflow dispatch
+            VERSIONS='["${{ inputs.version }}"]'
+          else
+            # Detect all version directories
+            VERSIONS=$(find . -maxdepth 1 -type d \( -name "edge" -o -name "3.*" \) -exec basename {} \; | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          fi
+          echo "versions=${VERSIONS}" >> $GITHUB_OUTPUT
+          echo "Detected versions: ${VERSIONS}"
+
+  build-and-push:
+    needs: detect-versions
+    runs-on: ubuntu-latest
+    if: needs.detect-versions.outputs.versions != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
+        architecture:
+          - aarch64
+          - armhf
+          - armv7
+          - ppc64le
+          - riscv64
+          - s390x
+          - x86
+          - x86_64
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check if Dockerfile exists
+        id: check-dockerfile
+        run: |
+          if [ -f "${{ matrix.version }}/${{ matrix.architecture }}/Dockerfile" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Dockerfile exists for ${{ matrix.version }}/${{ matrix.architecture }}"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Dockerfile not found for ${{ matrix.version }}/${{ matrix.architecture }}, skipping"
+          fi
+
+      - name: Set up QEMU
+        if: steps.check-dockerfile.outputs.exists == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.check-dockerfile.outputs.exists == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        if: steps.check-dockerfile.outputs.exists == 'true'
+        id: meta
+        run: |
+          # Read VERSION file
+          VERSION=$(cat ${{ matrix.version }}/VERSION | tr -d '\n')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          
+          # Map architecture names to Docker platform names
+          case "${{ matrix.architecture }}" in
+            x86_64)   PLATFORM="linux/amd64" ;;
+            aarch64)  PLATFORM="linux/arm64" ;;
+            armhf)    PLATFORM="linux/arm/v6" ;;
+            armv7)    PLATFORM="linux/arm/v7" ;;
+            ppc64le)  PLATFORM="linux/ppc64le" ;;
+            riscv64)  PLATFORM="linux/riscv64" ;;
+            s390x)    PLATFORM="linux/s390x" ;;
+            x86)      PLATFORM="linux/386" ;;
+            *)        PLATFORM="linux/amd64" ;;
+          esac
+          echo "platform=${PLATFORM}" >> $GITHUB_OUTPUT
+          
+          # Create tags
+          if [ "${{ matrix.version }}" = "edge" ]; then
+            TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge-${{ matrix.architecture }}"
+          else
+            TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}-${{ matrix.architecture }}"
+            TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.version }}-${{ matrix.architecture }}"
+          fi
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        if: steps.check-dockerfile.outputs.exists == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.version }}/${{ matrix.architecture }}
+          platforms: ${{ steps.meta.outputs.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  create-manifest:
+    needs: [detect-versions, build-and-push]
+    if: github.event_name != 'pull_request' && needs.detect-versions.outputs.versions != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read VERSION file
+        id: version
+        run: |
+          VERSION=$(cat ${{ matrix.version }}/VERSION | tr -d '\n')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Create and push manifest
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          
+          # Determine available architectures
+          ARCHITECTURES=""
+          for arch in aarch64 armhf armv7 ppc64le riscv64 s390x x86 x86_64; do
+            if [ -f "${{ matrix.version }}/${arch}/Dockerfile" ]; then
+              ARCHITECTURES="${ARCHITECTURES} ${arch}"
+            fi
+          done
+          
+          # Create manifest for version-specific tag
+          if [ "${{ matrix.version }}" = "edge" ]; then
+            MANIFEST_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge"
+          else
+            MANIFEST_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}"
+          fi
+          
+          # Build manifest create command
+          MANIFEST_CMD="docker buildx imagetools create -t ${MANIFEST_TAG}"
+          for arch in ${ARCHITECTURES}; do
+            if [ "${{ matrix.version }}" = "edge" ]; then
+              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge-${arch}"
+            else
+              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}-${arch}"
+            fi
+          done
+          
+          echo "Creating manifest: ${MANIFEST_CMD}"
+          eval ${MANIFEST_CMD}
+          
+          # Also create major.minor tag for non-edge versions
+          if [ "${{ matrix.version }}" != "edge" ]; then
+            MAJOR_MINOR=$(echo ${{ matrix.version }} | cut -d. -f1-2)
+            MAJOR_MINOR_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${MAJOR_MINOR}"
+            
+            MANIFEST_CMD="docker buildx imagetools create -t ${MAJOR_MINOR_TAG}"
+            for arch in ${ARCHITECTURES}; do
+              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}-${arch}"
+            done
+            
+            echo "Creating major.minor manifest: ${MANIFEST_CMD}"
+            eval ${MANIFEST_CMD}
+          fi
+
+      - name: Create latest tag for newest version
+        if: matrix.version != 'edge'
+        run: |
+          # Find the newest non-edge version
+          NEWEST=$(find . -maxdepth 1 -type d -name "3.*" -exec basename {} \; | sort -V | tail -1)
+          
+          if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
+            VERSION="${{ steps.version.outputs.version }}"
+            
+            # Determine available architectures
+            ARCHITECTURES=""
+            for arch in aarch64 armhf armv7 ppc64le riscv64 s390x x86 x86_64; do
+              if [ -f "${{ matrix.version }}/${arch}/Dockerfile" ]; then
+                ARCHITECTURES="${ARCHITECTURES} ${arch}"
+              fi
+            done
+            
+            MANIFEST_CMD="docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+            for arch in ${ARCHITECTURES}; do
+              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}-${arch}"
+            done
+            
+            echo "Creating latest manifest: ${MANIFEST_CMD}"
+            eval ${MANIFEST_CMD}
+          fi

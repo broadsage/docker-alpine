@@ -1,0 +1,129 @@
+name: Prepare Alpine Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Alpine branch to prepare (e.g., edge, v3.19, v3.20)'
+        required: true
+        default: 'edge'
+      create_pr:
+        description: 'Create pull request after preparation'
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      branch:
+        description: 'Alpine branch to prepare (e.g., edge, v3.19, v3.20)'
+        required: true
+        type: string
+      create_pr:
+        description: 'Create pull request after preparation'
+        type: boolean
+        default: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats tree
+
+      - name: Prepare Alpine release
+        id: prepare
+        run: |
+          chmod +x prepare-branch.sh
+          
+          # Run prepare command
+          ./prepare-branch.sh prepare ${{ inputs.branch }}
+          
+          # Get the temp directory from the output
+          TEMP_DIR=$(ls -dt ~/.cache/docker-brew-alpine-* 2>/dev/null | head -1 || ls -dt /tmp/docker-brew-alpine-* 2>/dev/null | head -1)
+          
+          if [ -z "$TEMP_DIR" ]; then
+            echo "Error: Could not find temporary directory"
+            exit 1
+          fi
+          
+          echo "temp_dir=${TEMP_DIR}" >> $GITHUB_OUTPUT
+          
+          # Organize Dockerfiles
+          ./prepare-branch.sh organize ${{ inputs.branch }} "${TEMP_DIR}"
+          
+          # Determine version directory name
+          if [ "${{ inputs.branch }}" = "edge" ]; then
+            VERSION_DIR="edge"
+          else
+            VERSION_DIR=$(cat ${TEMP_DIR}/VERSION 2>/dev/null || find . -maxdepth 1 -type d -name "3.*" | sort -V | tail -1 | xargs basename)
+          fi
+          
+          echo "version_dir=${VERSION_DIR}" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request
+        if: inputs.create_pr
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'feat: add Alpine ${{ steps.prepare.outputs.version_dir }} Dockerfiles'
+          title: 'Add Alpine ${{ steps.prepare.outputs.version_dir }} Dockerfiles'
+          body: |
+            ## Alpine Linux Release
+            
+            This PR adds Dockerfiles for Alpine Linux `${{ steps.prepare.outputs.version_dir }}`.
+            
+            ### Branch
+            - **Source Branch**: `${{ inputs.branch }}`
+            - **Version Directory**: `${{ steps.prepare.outputs.version_dir }}`
+            
+            ### Architecture Support
+            This release includes Dockerfiles for the following architectures:
+            - x86_64 (amd64)
+            - aarch64 (arm64)
+            - armv7
+            - armhf
+            - x86 (i386)
+            - ppc64le
+            - s390x
+            - riscv64
+            
+            ### Automated Changes
+            - ✅ Downloaded latest Alpine minirootfs tarballs
+            - ✅ Generated Dockerfiles for all architectures
+            - ✅ Verified checksums
+            - ✅ Ran automated tests
+            
+            ### Next Steps
+            1. Review the generated Dockerfiles
+            2. Merge this PR to trigger the build workflow
+            3. Multi-arch images will be automatically built and pushed to GitHub Container Registry
+            
+            ---
+            *This PR was automatically created by the Prepare Alpine Release workflow.*
+          branch: alpine-${{ steps.prepare.outputs.version_dir }}
+          branch-suffix: timestamp
+          delete-branch: true
+          labels: |
+            alpine
+            automated
+            docker
+
+      - name: Commit directly to master
+        if: ${{ !inputs.create_pr }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "feat: add Alpine ${{ steps.prepare.outputs.version_dir }} Dockerfiles" || echo "No changes to commit"
+          git push
