@@ -86,35 +86,39 @@ Scheduled workflow that checks for new Alpine releases and automatically prepare
 
 ## Image Registry
 
-Images are published to GitHub Container Registry (ghcr.io):
+Images are published to GitHub Container Registry (ghcr.io) as multi-architecture images:
 
 ```bash
-# Pull edge image
+# Pull edge image (multi-arch)
 docker pull ghcr.io/broadsage/alpine:edge
 
-# Pull specific version
+# Pull specific version (multi-arch)
 docker pull ghcr.io/broadsage/alpine:3.19.9
 
-# Pull latest stable
+# Pull latest stable (multi-arch)
 docker pull ghcr.io/broadsage/alpine:latest
 
-# Pull specific architecture
-docker pull ghcr.io/broadsage/alpine:3.19.9-x86_64
-docker pull ghcr.io/broadsage/alpine:edge-aarch64
+# Docker automatically pulls the correct architecture for your platform
+# Supported: linux/amd64, linux/arm64, linux/arm/v7, linux/arm/v6, 
+#            linux/386, linux/ppc64le, linux/s390x, linux/riscv64
 ```
 
-## Architecture Mapping
+## Architecture Support
 
-| Alpine Arch | Docker Platform | Tags Suffix |
-|-------------|----------------|-------------|
-| x86_64      | linux/amd64    | -x86_64     |
-| aarch64     | linux/arm64    | -aarch64    |
-| armv7       | linux/arm/v7   | -armv7      |
-| armhf       | linux/arm/v6   | -armhf      |
-| x86         | linux/386      | -x86        |
-| ppc64le     | linux/ppc64le  | -ppc64le    |
-| s390x       | linux/s390x    | -s390x      |
-| riscv64     | linux/riscv64  | -riscv64    |
+All images are published as multi-architecture manifests, supporting:
+
+| Alpine Arch | Docker Platform |
+|-------------|----------------|
+| x86_64      | linux/amd64    |
+| aarch64     | linux/arm64    |
+| armv7       | linux/arm/v7   |
+| armhf       | linux/arm/v6   |
+| x86         | linux/386      |
+| ppc64le     | linux/ppc64le  |
+| s390x       | linux/s390x    |
+| riscv64     | linux/riscv64  |
+
+**Note:** Docker/Podman automatically selects the correct architecture for your platform when pulling images.
 
 ## Secrets and Permissions
 

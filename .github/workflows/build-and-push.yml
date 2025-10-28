@@ -122,14 +122,13 @@ jobs:
           esac
           echo "platform=${PLATFORM}" >> $GITHUB_OUTPUT
           
-          # Create tags
+          # Create temporary tag for building (will be used only for manifest creation)
           if [ "${{ matrix.version }}" = "edge" ]; then
-            TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge-${{ matrix.architecture }}"
+            TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-edge-${{ matrix.architecture }}-${{ github.run_id }}"
           else
-            TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}-${{ matrix.architecture }}"
-            TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.version }}-${{ matrix.architecture }}"
+            TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${VERSION}-${{ matrix.architecture }}-${{ github.run_id }}"
           fi
-          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
         if: steps.check-dockerfile.outputs.exists == 'true'
@@ -138,7 +137,7 @@ jobs:
           context: ${{ matrix.version }}/${{ matrix.architecture }}
           platforms: ${{ steps.meta.outputs.platform }}
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tag }}
           labels: |
             org.opencontainers.image.source=${{ github.event.repository.html_url }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -179,6 +178,7 @@ jobs:
       - name: Create and push manifest
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          RUN_ID="${{ github.run_id }}"
           
           # Determine available architectures
           ARCHITECTURES=""
@@ -195,17 +195,17 @@ jobs:
             MANIFEST_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}"
           fi
           
-          # Build manifest create command
+          # Build manifest create command using temporary build tags
           MANIFEST_CMD="docker buildx imagetools create -t ${MANIFEST_TAG}"
           for arch in ${ARCHITECTURES}; do
             if [ "${{ matrix.version }}" = "edge" ]; then
-              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge-${arch}"
+              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-edge-${arch}-${RUN_ID}"
             else
-              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}-${arch}"
+              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${VERSION}-${arch}-${RUN_ID}"
             fi
           done
           
-          echo "Creating manifest: ${MANIFEST_CMD}"
+          echo "Creating manifest: ${MANIFEST_TAG}"
           eval ${MANIFEST_CMD}
           
           # Also create major.minor tag for non-edge versions
@@ -215,10 +215,10 @@ jobs:
             
             MANIFEST_CMD="docker buildx imagetools create -t ${MAJOR_MINOR_TAG}"
             for arch in ${ARCHITECTURES}; do
-              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}-${arch}"
+              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${VERSION}-${arch}-${RUN_ID}"
             done
             
-            echo "Creating major.minor manifest: ${MANIFEST_CMD}"
+            echo "Creating manifest: ${MAJOR_MINOR_TAG}"
             eval ${MANIFEST_CMD}
           fi
 
@@ -230,6 +230,7 @@ jobs:
           
           if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
             VERSION="${{ steps.version.outputs.version }}"
+            RUN_ID="${{ github.run_id }}"
             
             # Determine available architectures
             ARCHITECTURES=""
@@ -241,9 +242,55 @@ jobs:
             
             MANIFEST_CMD="docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
             for arch in ${ARCHITECTURES}; do
-              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}-${arch}"
+              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${VERSION}-${arch}-${RUN_ID}"
             done
             
-            echo "Creating latest manifest: ${MANIFEST_CMD}"
+            echo "Creating manifest: latest"
             eval ${MANIFEST_CMD}
           fi
+
+  cleanup-temp-tags:
+    needs: [detect-versions, build-and-push, create-manifest]
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
+    
+    permissions:
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Delete temporary build tags
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID="${{ github.run_id }}"
+          VERSION=$(cat ${{ matrix.version }}/VERSION | tr -d '\n' 2>/dev/null || echo "unknown")
+          
+          # Delete temporary tags for each architecture
+          for arch in aarch64 armhf armv7 ppc64le riscv64 s390x x86 x86_64; do
+            if [ -f "${{ matrix.version }}/${arch}/Dockerfile" ]; then
+              if [ "${{ matrix.version }}" = "edge" ]; then
+                TAG="build-edge-${arch}-${RUN_ID}"
+              else
+                TAG="build-${VERSION}-${arch}-${RUN_ID}"
+              fi
+              
+              echo "Attempting to delete temporary tag: ${TAG}"
+              
+              # Use GitHub API to delete the package version
+              # Note: This requires the package to exist; errors are ignored
+              curl -X DELETE \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/user/packages/container/$(echo ${{ env.IMAGE_NAME }} | cut -d'/' -f2)/versions?tag=${TAG}" \
+                2>/dev/null || echo "Tag ${TAG} may not exist or already deleted"
+            fi
+          done
+
