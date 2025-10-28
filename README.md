@@ -1,32 +1,27 @@
-= docker-alpine
+# docker-alpine
 
-:ao: alpinelinux.org
-:hubp: _/alpine
-:hub: https://hub.docker.com/r/{hubp}/
-
-image:https://img.shields.io/docker/stars/{hubp}.svg[link={hub}]
-image:https://img.shields.io/docker/pulls/{hubp}.svg[link={hub}]
-
-The official Docker image for https://{ao}[Alpine Linux].
+The official Docker image for [Alpine Linux](https://alpinelinux.org).
 The image is only 5MB and has access to a package repository that is much more featureful than other BusyBox based images.
 
-== Why
+## Why
+
 Docker images today are big.
 Usually much larger than they need to be.
 There are a lot of ways to make them smaller, but the Docker populace still jumps to the `ubuntu` base image for most projects.
 The size savings over `ubuntu` and other bases are huge:
-[source]
-----
+
+```text
 REPOSITORY  TAG     IMAGE ID      CREATED      SIZE
 alpine      latest  961769676411  4 weeks ago  5.58MB
 ubuntu      latest  2ca708c1c9cc  2 days ago   64.2MB
 debian      latest  c2c03a296d23  9 days ago   114MB
 centos      latest  67fa590cfc1c  4 weeks ago  202MB
-----
+```
+
 There are images such as `progrium/busybox` which get us close to a minimal container and package system, but these particular BusyBox builds piggyback on the OpenWRT package index, which is often lacking and not tailored towards generic everyday applications.
-Alpine Linux has a much more featureful and up to date https://pkgs.{ao}[Package Index]:
-[source]
-----
+Alpine Linux has a much more featureful and up to date [Package Index](https://pkgs.alpinelinux.org):
+
+```bash
 $ docker run progrium/busybox opkg-install nodejs
 Unknown package 'nodejs'.
 Collected errors:
@@ -45,29 +40,68 @@ fetch http://dl-cdn.alpinelinux.org/alpine/v3.9/community/x86_64/APKINDEX.tar.gz
 Executing busybox-1.29.3-r10.trigger
 Executing ca-certificates-20190108-r0.trigger
 OK: 31 MiB in 21 packages
-----
+```
+
 This makes Alpine Linux a great image base for utilities, as well as production applications.
-https://www.{ao}/about/[Read more about Alpine Linux here] and it will become obvious how its mantra fits in right at home with Docker images.
+[Read more about Alpine Linux here](https://www.alpinelinux.org/about/) and it will become obvious how its mantra fits in right at home with Docker images.
 
-NOTE: All of the example outputs above were last generated/updated on May 3rd 2019.
+> **Note**: All of the example outputs above were last generated/updated on May 3rd 2019.
 
-== Usage
+## Usage
+
 Stop doing this:
-[source, dockerfile]
-----
+
+```dockerfile
 FROM ubuntu:22.04
 RUN apt-get update -q \
   && DEBIAN_FRONTEND=noninteractive apt-get install -qy mysql-client \
   && apt-get clean \
   && rm -rf /var/lib/apt
 ENTRYPOINT ["mysql"]
-----
+```
+
 This took 28 seconds to build and yields a 169 MB image.
+
 Start doing this:
-[source, dockerfile]
-----
+
+```dockerfile
 FROM alpine:3.16
 RUN apk add --no-cache mysql-client
 ENTRYPOINT ["mysql"]
-----
+```
+
 Only 4 seconds to build and results in a 41 MB image!
+
+## Documentation
+
+- [About](docs/about.md) - Learn more about Alpine Linux, musl libc, and BusyBox
+- [Usage](docs/usage.md) - Package management and examples
+- [Build](docs/build.md) - How to build Alpine images locally
+- [Caveats](docs/caveats.md) - Important differences from glibc-based systems
+
+## Building Images
+
+Use the `prepare-branch.sh` script to prepare and organize Alpine Docker images:
+
+```bash
+# Prepare edge branch
+./prepare-branch.sh prepare edge
+
+# Organize into version/architecture structure
+./prepare-branch.sh organize edge /path/to/temp/directory
+
+# Or run the complete workflow
+./prepare-branch.sh all edge
+```
+
+For versioned releases:
+
+```bash
+./prepare-branch.sh all v3.19
+```
+
+Run `./prepare-branch.sh help` for more information.
+
+## License
+
+See [LICENSE](LICENSE) file.
