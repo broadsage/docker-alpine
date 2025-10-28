@@ -27,20 +27,25 @@ jobs:
           
           # Check edge
           EDGE_UPDATED="false"
-          if [ -d "edge" ]; then
-            CURRENT_EDGE_VERSION=$(cat edge/VERSION 2>/dev/null || echo "0")
-            # Try to prepare edge
-            if ./prepare-branch.sh prepare edge 2>&1 | tee /tmp/edge-prepare.log; then
-              TEMP_DIR=$(ls -dt ~/.cache/docker-brew-alpine-* 2>/dev/null | head -1 || ls -dt /tmp/docker-brew-alpine-* 2>/dev/null | head -1)
-              if [ -n "$TEMP_DIR" ] && [ -f "$TEMP_DIR/VERSION" ]; then
-                NEW_EDGE_VERSION=$(cat "$TEMP_DIR/VERSION")
-                if [ "$CURRENT_EDGE_VERSION" != "$NEW_EDGE_VERSION" ]; then
-                  echo "Edge updated from $CURRENT_EDGE_VERSION to $NEW_EDGE_VERSION"
-                  EDGE_UPDATED="true"
-                fi
-                rm -rf "$TEMP_DIR"
+          CURRENT_EDGE_VERSION=$(cat edge/VERSION 2>/dev/null || echo "none")
+          
+          # Try to prepare edge in a temporary location to check version
+          if ./prepare-branch.sh prepare edge 2>&1 | tee /tmp/edge-prepare.log; then
+            TEMP_DIR=$(ls -dt ~/.cache/docker-brew-alpine-* 2>/dev/null | head -1 || ls -dt /tmp/docker-brew-alpine-* 2>/dev/null | head -1)
+            if [ -n "$TEMP_DIR" ] && [ -f "$TEMP_DIR/VERSION" ]; then
+              NEW_EDGE_VERSION=$(cat "$TEMP_DIR/VERSION")
+              if [ "$CURRENT_EDGE_VERSION" != "$NEW_EDGE_VERSION" ]; then
+                echo "Edge version changed: $CURRENT_EDGE_VERSION -> $NEW_EDGE_VERSION"
+                EDGE_UPDATED="true"
+              else
+                echo "Edge version unchanged: $NEW_EDGE_VERSION"
               fi
+              rm -rf "$TEMP_DIR"
+            else
+              echo "Warning: Could not determine new edge version"
             fi
+          else
+            echo "Warning: Failed to prepare edge branch"
           fi
           echo "edge_updated=${EDGE_UPDATED}" >> $GITHUB_OUTPUT
           
@@ -59,7 +64,7 @@ jobs:
     secrets: inherit
 
   notify:
-    needs: [check-updates, update-edge]
+    needs: [check-updates]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -67,7 +72,13 @@ jobs:
         run: |
           echo "## Alpine Update Check Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Edge updated: ${{ needs.check-updates.outputs.edge_updated }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Versions updated: ${{ needs.check-updates.outputs.versions_updated }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Edge updated**: ${{ needs.check-updates.outputs.edge_updated }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Versions updated**: ${{ needs.check-updates.outputs.versions_updated }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.check-updates.outputs.edge_updated }}" = "true" ]; then
+            echo "✅ Edge update detected - PR workflow triggered" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✨ No edge updates detected" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Check completed at $(date -u)" >> $GITHUB_STEP_SUMMARY
