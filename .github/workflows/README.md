@@ -9,11 +9,13 @@ This directory contains automated workflows for building and publishing Alpine L
 Automatically builds and publishes multi-architecture Docker images to GitHub Container Registry.
 
 **Triggers:**
+
 - Push to `master` branch (when Alpine version directories change)
 - Pull requests (builds without pushing)
 - Manual workflow dispatch with version selection
 
 **Features:**
+
 - Multi-architecture support (amd64, arm64, armv7, armhf, i386, ppc64le, s390x, riscv64)
 - Automatic version detection from directory structure
 - Creates manifest lists for multi-arch images
@@ -25,6 +27,7 @@ Automatically builds and publishes multi-architecture Docker images to GitHub Co
 - Uses Docker layer caching for faster builds
 
 **Manual Usage:**
+
 ```bash
 # Build all versions
 gh workflow run build-and-push.yml
@@ -39,13 +42,16 @@ gh workflow run build-and-push.yml -f version=3.19.9
 Prepares new Alpine Linux releases by downloading minirootfs tarballs and generating Dockerfiles.
 
 **Triggers:**
+
 - Manual workflow dispatch
 
 **Inputs:**
+
 - `branch`: Alpine branch to prepare (e.g., `edge`, `v3.19`, `v3.20`)
 - `create_pr`: Whether to create a pull request (default: true)
 
 **Process:**
+
 1. Downloads Alpine minirootfs tarballs for all architectures
 2. Verifies checksums
 3. Generates Dockerfiles
@@ -53,6 +59,7 @@ Prepares new Alpine Linux releases by downloading minirootfs tarballs and genera
 5. Creates a pull request (or commits directly)
 
 **Usage:**
+
 ```bash
 # Prepare edge release (creates PR)
 gh workflow run prepare-release.yml -f branch=edge -f create_pr=true
@@ -66,10 +73,12 @@ gh workflow run prepare-release.yml -f branch=v3.19 -f create_pr=false
 Scheduled workflow that checks for new Alpine releases and automatically prepares them.
 
 **Triggers:**
+
 - Daily at 2 AM UTC (cron schedule)
 - Manual workflow dispatch
 
 **Process:**
+
 1. Checks if edge has been updated
 2. Checks for new stable version releases
 3. Automatically triggers prepare-release workflow if updates found
@@ -81,17 +90,17 @@ Images are published to GitHub Container Registry (ghcr.io):
 
 ```bash
 # Pull edge image
-docker pull ghcr.io/broadsage-containers/docker-alpine:edge
+docker pull ghcr.io/broadsage/alpine:edge
 
 # Pull specific version
-docker pull ghcr.io/broadsage-containers/docker-alpine:3.19.9
+docker pull ghcr.io/broadsage/alpine:3.19.9
 
 # Pull latest stable
-docker pull ghcr.io/broadsage-containers/docker-alpine:latest
+docker pull ghcr.io/broadsage/alpine:latest
 
 # Pull specific architecture
-docker pull ghcr.io/broadsage-containers/docker-alpine:3.19.9-x86_64
-docker pull ghcr.io/broadsage-containers/docker-alpine:edge-aarch64
+docker pull ghcr.io/broadsage/alpine:3.19.9-x86_64
+docker pull ghcr.io/broadsage/alpine:edge-aarch64
 ```
 
 ## Architecture Mapping
@@ -161,6 +170,7 @@ gh workflow run build-and-push.yml
 ### Update Detection Issues
 
 If automatic updates aren't being detected:
+
 1. Check the schedule in `update-releases.yml`
 2. Review workflow run logs
 3. Manually trigger the update workflow
@@ -183,6 +193,7 @@ If automatic updates aren't being detected:
 ## Monitoring
 
 View workflow status:
+
 - GitHub Actions tab in repository
 - Workflow badges (add to README.md)
 - GitHub notifications for failed workflows
