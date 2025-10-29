@@ -57,6 +57,9 @@ jobs:
   update-edge:
     needs: check-updates
     if: needs.check-updates.outputs.edge_updated == 'true'
+    permissions:
+      contents: write
+      pull-requests: write
     uses: ./.github/workflows/prepare-release.yml
     with:
       branch: edge
