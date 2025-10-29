@@ -12,6 +12,7 @@ jobs:
     outputs:
       edge_updated: ${{ steps.check.outputs.edge_updated }}
       versions_updated: ${{ steps.check.outputs.versions_updated }}
+      check_failed: ${{ steps.check.outputs.check_failed }}
     
     steps:
       - name: Checkout repository
@@ -22,32 +23,75 @@ jobs:
 
       - name: Check for updates
         id: check
+        continue-on-error: true
         run: |
           chmod +x prepare-branch.sh
           
           # Check edge
           EDGE_UPDATED="false"
+          CHECK_FAILED="false"
           CURRENT_EDGE_VERSION=$(cat edge/VERSION 2>/dev/null || echo "none")
           
+          echo "Current edge version: $CURRENT_EDGE_VERSION"
+          
           # Try to prepare edge in a temporary location to check version
-          if ./prepare-branch.sh prepare edge 2>&1 | tee /tmp/edge-prepare.log; then
+          # Retry up to 3 times with exponential backoff
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          PREPARE_SUCCESS=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "Attempt $(($RETRY_COUNT + 1)) of $MAX_RETRIES: Fetching edge releases..."
+            
+            if ./prepare-branch.sh prepare edge 2>&1 | tee /tmp/edge-prepare.log; then
+              PREPARE_SUCCESS=true
+              break
+            else
+              RETRY_COUNT=$(($RETRY_COUNT + 1))
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                SLEEP_TIME=$((2 ** $RETRY_COUNT))
+                echo "Failed to fetch releases. Retrying in ${SLEEP_TIME}s..."
+                sleep $SLEEP_TIME
+              fi
+            fi
+          done
+          
+          if [ "$PREPARE_SUCCESS" = true ]; then
             TEMP_DIR=$(ls -dt ~/.cache/docker-brew-alpine-* 2>/dev/null | head -1 || ls -dt /tmp/docker-brew-alpine-* 2>/dev/null | head -1)
+            
             if [ -n "$TEMP_DIR" ] && [ -f "$TEMP_DIR/VERSION" ]; then
               NEW_EDGE_VERSION=$(cat "$TEMP_DIR/VERSION")
+              echo "New edge version: $NEW_EDGE_VERSION"
+              
               if [ "$CURRENT_EDGE_VERSION" != "$NEW_EDGE_VERSION" ]; then
-                echo "Edge version changed: $CURRENT_EDGE_VERSION -> $NEW_EDGE_VERSION"
+                echo "✅ Edge version changed: $CURRENT_EDGE_VERSION -> $NEW_EDGE_VERSION"
                 EDGE_UPDATED="true"
               else
-                echo "Edge version unchanged: $NEW_EDGE_VERSION"
+                echo "ℹ️ Edge version unchanged: $NEW_EDGE_VERSION"
               fi
               rm -rf "$TEMP_DIR"
             else
-              echo "Warning: Could not determine new edge version"
+              echo "⚠️ Warning: Temporary directory not found or VERSION file missing"
+              CHECK_FAILED="true"
             fi
           else
-            echo "Warning: Failed to prepare edge branch"
+            # Check if it's a network error or no releases available
+            if grep -q "No releases found" /tmp/edge-prepare.log; then
+              echo "⚠️ No releases found on Alpine mirror. This may indicate:"
+              echo "  - Mirror is temporarily unavailable"
+              echo "  - Edge releases path has changed"
+              echo "  - Network connectivity issues"
+            elif grep -q "Error" /tmp/edge-prepare.log; then
+              echo "❌ Error occurred while fetching releases:"
+              grep "Error" /tmp/edge-prepare.log | head -5
+            else
+              echo "❌ Unknown error occurred during prepare"
+            fi
+            CHECK_FAILED="true"
           fi
+          
           echo "edge_updated=${EDGE_UPDATED}" >> $GITHUB_OUTPUT
+          echo "check_failed=${CHECK_FAILED}" >> $GITHUB_OUTPUT
           
           # Check for new stable versions
           VERSIONS_UPDATED="false"
@@ -75,13 +119,32 @@ jobs:
         run: |
           echo "## Alpine Update Check Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Edge updated**: ${{ needs.check-updates.outputs.edge_updated }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Versions updated**: ${{ needs.check-updates.outputs.versions_updated }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.check-updates.outputs.edge_updated }}" = "true" ]; then
-            echo "✅ Edge update detected - PR workflow triggered" >> $GITHUB_STEP_SUMMARY
+          
+          # Check if the update check failed
+          if [ "${{ needs.check-updates.outputs.check_failed }}" = "true" ]; then
+            echo "⚠️ **Status**: Check failed - unable to verify updates" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Possible causes:" >> $GITHUB_STEP_SUMMARY
+            echo "- Alpine mirror temporarily unavailable" >> $GITHUB_STEP_SUMMARY
+            echo "- Network connectivity issues" >> $GITHUB_STEP_SUMMARY
+            echo "- Release structure changed on Alpine mirrors" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Recommendations:" >> $GITHUB_STEP_SUMMARY
+            echo "1. Check [Alpine Linux downloads](https://alpinelinux.org/downloads/)" >> $GITHUB_STEP_SUMMARY
+            echo "2. Manually trigger workflow after some time" >> $GITHUB_STEP_SUMMARY
+            echo "3. Check workflow logs for detailed error messages" >> $GITHUB_STEP_SUMMARY
           else
-            echo "✨ No edge updates detected" >> $GITHUB_STEP_SUMMARY
+            echo "- **Edge updated**: ${{ needs.check-updates.outputs.edge_updated }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Versions updated**: ${{ needs.check-updates.outputs.versions_updated }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "${{ needs.check-updates.outputs.edge_updated }}" = "true" ]; then
+              echo "✅ Edge update detected - PR workflow triggered" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✨ No edge updates detected" >> $GITHUB_STEP_SUMMARY
+            fi
           fi
+          
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
           echo "Check completed at $(date -u)" >> $GITHUB_STEP_SUMMARY
