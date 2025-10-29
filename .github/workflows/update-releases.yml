@@ -104,7 +104,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: ./.github/workflows/prepare-release.yml
+    uses: broadsage-containers/docker-alpine/.github/workflows/prepare-release.yml@master
     with:
       branch: edge
       create_pr: true
