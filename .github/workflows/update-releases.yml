@@ -27,9 +27,23 @@ jobs:
       - name: Check for updates
         id: check
         continue-on-error: true
+        env:
+          FORCE_DOCKER: "true"  # Force Docker usage in GitHub Actions
         run: |
           set +e  # Don't exit on error, we want to handle it
           chmod +x prepare-branch.sh
+          
+          # Debug environment
+          echo "::group::Environment Information"
+          echo "Docker version:"
+          docker --version || echo "Docker not available"
+          echo ""
+          echo "Podman version:"
+          podman --version 2>/dev/null || echo "Podman not available"
+          echo ""
+          echo "Network connectivity test:"
+          curl -sSf -I https://dl-cdn.alpinelinux.org/alpine/ | head -5 || echo "Failed to connect to Alpine CDN"
+          echo "::endgroup::"
           
           # Initialize variables
           EDGE_UPDATED="false"
@@ -75,6 +89,9 @@ jobs:
               
               if [ $ERROR_TYPE -eq 1 ]; then
                 # No releases found - this is not an error, just no updates
+                echo "::group::Error Log Details"
+                cat /tmp/edge-prepare.log
+                echo "::endgroup::"
                 echo "::notice::No releases currently available on Alpine mirror"
                 CHECK_STATUS="no_releases"
                 ERROR_MESSAGE="No releases found on Alpine mirror at this time"
@@ -87,11 +104,17 @@ jobs:
                   echo "::warning::Network error detected. Retrying in ${SLEEP_TIME}s..."
                   sleep $SLEEP_TIME
                 else
+                  echo "::group::Error Log Details"
+                  cat /tmp/edge-prepare.log
+                  echo "::endgroup::"
                   CHECK_STATUS="network_error"
                   ERROR_MESSAGE="Network error after $MAX_RETRIES attempts"
                 fi
               else
                 # Unknown error - don't retry
+                echo "::group::Error Log Details"
+                cat /tmp/edge-prepare.log
+                echo "::endgroup::"
                 CHECK_STATUS="error"
                 ERROR_MESSAGE=$(grep "Error" /tmp/edge-prepare.log | head -1 || echo "Unknown error occurred")
                 break

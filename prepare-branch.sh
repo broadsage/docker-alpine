@@ -45,6 +45,12 @@ log_success() {
 
 # Detect available container runtime (Podman or Docker)
 detect_container_runtime() {
+	# Force Docker if FORCE_DOCKER environment variable is set
+	if [[ "${FORCE_DOCKER:-}" == "true" ]] && command -v docker >/dev/null 2>&1; then
+		echo "docker"
+		return
+	fi
+	
 	if command -v podman >/dev/null 2>&1; then
 		echo "podman"
 	elif command -v docker >/dev/null 2>&1; then
