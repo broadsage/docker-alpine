@@ -37,53 +37,6 @@ gh workflow run build-and-push.yml -f version=edge
 gh workflow run build-and-push.yml -f version=3.19.9
 ```
 
-### 2. Prepare Alpine Release (`prepare-release.yml`)
-
-Prepares new Alpine Linux releases by downloading minirootfs tarballs and generating Dockerfiles.
-
-**Triggers:**
-
-- Manual workflow dispatch
-
-**Inputs:**
-
-- `branch`: Alpine branch to prepare (e.g., `edge`, `v3.19`, `v3.20`)
-- `create_pr`: Whether to create a pull request (default: true)
-
-**Process:**
-
-1. Downloads Alpine minirootfs tarballs for all architectures
-2. Verifies checksums
-3. Generates Dockerfiles
-4. Runs automated tests
-5. Creates a pull request (or commits directly)
-
-**Usage:**
-
-```bash
-# Prepare edge release (creates PR)
-gh workflow run prepare-release.yml -f branch=edge -f create_pr=true
-
-# Prepare v3.19 release (commit directly)
-gh workflow run prepare-release.yml -f branch=v3.19 -f create_pr=false
-```
-
-### 3. Update Alpine Releases (`update-releases.yml`)
-
-Scheduled workflow that checks for new Alpine releases and automatically prepares them.
-
-**Triggers:**
-
-- Daily at 2 AM UTC (cron schedule)
-- Manual workflow dispatch
-
-**Process:**
-
-1. Checks if edge has been updated
-2. Checks for new stable version releases
-3. Automatically triggers prepare-release workflow if updates found
-4. Creates pull requests for review
-
 ## Image Registry
 
 Images are published to GitHub Container Registry (ghcr.io) as multi-architecture images:
@@ -170,14 +123,6 @@ gh workflow run build-and-push.yml
 1. **Architecture-specific failures**: Check if the Dockerfile exists for that architecture
 2. **Manifest creation failures**: Ensure all architecture builds completed successfully
 3. **Permission errors**: Verify repository has packages write permission
-
-### Update Detection Issues
-
-If automatic updates aren't being detected:
-
-1. Check the schedule in `update-releases.yml`
-2. Review workflow run logs
-3. Manually trigger the update workflow
 
 ## Development
 
