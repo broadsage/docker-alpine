@@ -145,7 +145,14 @@ validate_dependencies() {
 		command -v "$dep" >/dev/null 2>&1 || missing_deps+=("$dep")
 	done
 	
-	[[ ${#missing_deps[@]} -eq 0 ]] || die "$EXIT_MISSING_DEPENDENCY" "Missing required dependencies: ${missing_deps[*]}"
+	if [[ ${#missing_deps[@]} -gt 0 ]]; then
+		log_error "Missing required dependencies: ${missing_deps[*]}"
+		if [[ " ${missing_deps[*]} " =~ " bats " ]]; then
+			log_error "Install bats to run tests. On macOS: brew install bats-core"
+			log_error "Or skip the test command and use 'prepare' and 'organize' separately"
+		fi
+		exit "$EXIT_MISSING_DEPENDENCY"
+	fi
 }
 
 # Set the container runtime command
