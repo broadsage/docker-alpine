@@ -280,7 +280,10 @@ get_target_directory() {
 	if [[ "$branch" == "edge" ]]; then
 		echo "${SCRIPT_DIR}/edge"
 	else
-		echo "${SCRIPT_DIR}/${version}"
+		# Extract major.minor from version (e.g., 3.19.9 -> 3.19)
+		local major_minor
+		major_minor="$(echo "$version" | grep -oE '^[0-9]+\.[0-9]+' || echo "$version")"
+		echo "${SCRIPT_DIR}/${major_minor}"
 	fi
 }
 
@@ -351,15 +354,16 @@ organize_dockerfiles() {
 	validate_directory "$dir" "source directory"
 	require_file "$dir/VERSION" "VERSION file"
 	
-	local version target_dir
+	local version target_dir dir_name
 	version="$(cat "$dir/VERSION")"
 	target_dir="$(get_target_directory "$branch" "$version")"
+	dir_name="$(basename "$target_dir")"
 	
 	# Log what we're doing
 	if [[ "$branch" == "edge" ]]; then
 		log_info "Organizing Dockerfiles for edge branch (version: $version)"
 	else
-		log_info "Organizing Dockerfiles for version $version"
+		log_info "Organizing Dockerfiles for Alpine $version -> $dir_name/ directory"
 	fi
 	
 	# Handle existing directory
