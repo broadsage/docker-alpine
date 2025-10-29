@@ -43,6 +43,76 @@ log_success() {
 	echo "=> [SUCCESS] $*" >&2
 }
 
+log_warn() {
+	echo "=> [WARN] $*" >&2
+}
+
+# Error handling with automatic exit
+die() {
+	local exit_code="${1:-1}"
+	shift
+	log_error "$@"
+	exit "$exit_code"
+}
+
+# Cleanup trap handler
+cleanup() {
+	if [[ -n "${CLEANUP_TEMP_DIR:-}" && -d "${CLEANUP_TEMP_DIR}" ]]; then
+		log_info "Cleaning up temporary directory: $CLEANUP_TEMP_DIR"
+		rm -rf "$CLEANUP_TEMP_DIR"
+	fi
+}
+
+trap cleanup EXIT INT TERM
+
+# Validate directory exists and is not empty
+validate_directory() {
+	local dir="$1"
+	local error_context="${2:-directory}"
+	
+	[[ -d "$dir" ]] || die "$EXIT_INVALID_ARGS" "Directory does not exist: $dir"
+	[[ -n "$(ls -A "$dir" 2>/dev/null)" ]] || die "$EXIT_INVALID_ARGS" "Directory is empty: $dir"
+}
+
+# Validate directory has required file
+require_file() {
+	local file="$1"
+	local context="${2:-file}"
+	
+	if [[ ! -f "$file" ]]; then
+		log_error "$context not found: $file"
+		if [[ -d "$(dirname "$file")" ]]; then
+			log_error "Directory contents:"
+			ls -la "$(dirname "$file")" >&2
+		fi
+		die "$EXIT_INVALID_ARGS" "Make sure the 'prepare' command completed successfully"
+	fi
+}
+
+# Execute container command with error handling
+run_container() {
+	local description="$1"
+	shift
+	
+	log_info "$description"
+	"$CONTAINER_CMD" "$@" || die 1 "Failed: $description"
+}
+
+# Build container image
+build_container_image() {
+	local tag="$1"
+	local context="$2"
+	
+	run_container "Building container image: $tag" build -t "$tag" "$context"
+}
+
+# Remove container image
+remove_container_image() {
+	local image="$1"
+	
+	"$CONTAINER_CMD" rmi "$image" 2>/dev/null || log_warn "Could not remove image: $image"
+}
+
 # Detect available container runtime (Podman or Docker)
 detect_container_runtime() {
 	# Force Docker if FORCE_DOCKER environment variable is set
@@ -51,39 +121,31 @@ detect_container_runtime() {
 		return
 	fi
 	
-	if command -v podman >/dev/null 2>&1; then
-		echo "podman"
-	elif command -v docker >/dev/null 2>&1; then
-		echo "docker"
-	else
-		log_error "Neither podman nor docker is available"
-		exit "$EXIT_NO_CONTAINER_RUNTIME"
-	fi
+	# Prefer Podman, fallback to Docker
+	local runtime
+	for runtime in podman docker; do
+		if command -v "$runtime" >/dev/null 2>&1; then
+			echo "$runtime"
+			return
+		fi
+	done
+	
+	die "$EXIT_NO_CONTAINER_RUNTIME" "Neither podman nor docker is available"
 }
 
 # Validate required dependencies
 validate_dependencies() {
-	local missing_deps=()
 	local check_bats="${1:-false}"
-	local dep
+	local -a required_deps=(git sha512sum)
+	local -a missing_deps=()
 	
-	for dep in git sha512sum; do
-		if ! command -v "$dep" >/dev/null 2>&1; then
-			missing_deps+=("$dep")
-		fi
+	[[ "$check_bats" == "true" ]] && required_deps+=(bats)
+	
+	for dep in "${required_deps[@]}"; do
+		command -v "$dep" >/dev/null 2>&1 || missing_deps+=("$dep")
 	done
 	
-	# Only check for bats if running tests
-	if [ "$check_bats" = "true" ]; then
-		if ! command -v bats >/dev/null 2>&1; then
-			missing_deps+=("bats")
-		fi
-	fi
-	
-	if [ ${#missing_deps[@]} -gt 0 ]; then
-		log_error "Missing required dependencies: ${missing_deps[*]}"
-		exit "$EXIT_MISSING_DEPENDENCY"
-	fi
+	[[ ${#missing_deps[@]} -eq 0 ]] || die "$EXIT_MISSING_DEPENDENCY" "Missing required dependencies: ${missing_deps[*]}"
 }
 
 # Set the container runtime command
@@ -94,32 +156,82 @@ log_info "Using container runtime: $CONTAINER_CMD"
 run_tests() {
 	local branch="${1:?Branch name required}"
 	local dir="${2:?Directory path required}"
-	local arch
-	local testimage
-	
-	arch="$(uname -m)"
-	testimage="alpine:${branch#v}-test"
+	local arch="$(uname -m)"
+	local testimage="alpine:${branch#v}-test"
 	
 	log_info "Running tests for branch '$branch' on architecture '$arch'"
 	
-	if [ ! -d "$dir/$arch" ]; then
-		log_error "Directory not found: $dir/$arch"
-		return "$EXIT_INVALID_ARGS"
+	validate_directory "$dir/$arch" "test directory"
+	
+	build_container_image "$testimage" "$dir/$arch/"
+	
+	# Run tests and cleanup regardless of result
+	local test_result=0
+	BRANCH="$branch" bats ./tests/common.bats || test_result=$?
+	
+	remove_container_image "$testimage"
+	
+	if [[ $test_result -ne 0 ]]; then
+		die 1 "Tests failed for branch '$branch'"
 	fi
 	
-	"$CONTAINER_CMD" build -t "$testimage" "$dir/$arch/" || {
-		log_error "Failed to build test image"
-		return 1
-	}
-	
-	BRANCH="$branch" bats ./tests/common.bats || {
-		log_error "Tests failed"
-		"$CONTAINER_CMD" rmi "$testimage" 2>/dev/null || true
-		return 1
-	}
-	
-	"$CONTAINER_CMD" rmi "$testimage" || log_error "Failed to remove test image"
 	log_success "Tests passed for branch '$branch'"
+}
+
+# Create temporary directory for Alpine release preparation
+create_temp_directory() {
+	local dir
+	dir="$(mktemp -d "${TEMP_DIR_PREFIX}-XXXXXX")" || die 1 "Failed to create temporary directory"
+	
+	# Get absolute path and set cleanup trap
+	dir="$(cd "$dir" && pwd)"
+	CLEANUP_TEMP_DIR="$dir"
+	
+	log_info "Using temporary directory: $dir"
+	
+	# Verify directory is writable (important for Podman on macOS)
+	[[ -w "$dir" ]] || die 1 "Directory is not writable: $dir"
+	
+	echo "$dir"
+}
+
+# Fetch Alpine release files using container
+fetch_alpine_release() {
+	local branch="$1"
+	local dir="$2"
+	
+	build_container_image "docker-brew-alpine-fetch" "."
+	
+	log_info "Fetching Alpine release files for branch: $branch"
+	
+	# Special notice for Podman on macOS
+	if [[ "$OSTYPE" == "darwin"* && "$CONTAINER_CMD" == "podman" ]]; then
+		log_info "Using Podman on macOS - directory accessible to Podman VM"
+	fi
+	
+	"$CONTAINER_CMD" run \
+		${MIRROR+ -e "MIRROR=$MIRROR"} \
+		--user "$(id -u)" --rm \
+		-v "$dir:/out" \
+		docker-brew-alpine-fetch "$branch" /out || {
+		log_error "Failed to fetch release files"
+		if [[ "$OSTYPE" == "darwin"* && "$CONTAINER_CMD" == "podman" ]]; then
+			log_error "Podman on macOS troubleshooting:"
+			log_error "  - Ensure Podman machine is running: 'podman machine start'"
+			log_error "  - Check volume mounts: 'podman machine ssh'"
+			log_error "  - Directory used: $dir"
+		fi
+		die 1 "Release fetch failed"
+	}
+}
+
+# Verify checksums of downloaded files
+verify_checksums() {
+	local dir="$1"
+	
+	log_info "Verifying checksums..."
+	(cd "$dir" && sha512sum -c checksums.sha512) || die 1 "Checksum verification failed"
+	log_success "Checksums verified successfully"
 }
 
 # Prepare release directory
@@ -129,77 +241,19 @@ prepare() {
 	
 	log_info "Preparing branch: $branch"
 	
-	dir="$(mktemp -d "${TEMP_DIR_PREFIX}-XXXXXX")" || {
-		log_error "Failed to create temporary directory"
-		return 1
-	}
-	
-	# Ensure directory exists and get absolute path
-	if [ ! -d "$dir" ]; then
-		log_error "Temporary directory was not created properly: $dir"
-		return 1
-	fi
-	
-	# Get absolute path
-	dir="$(cd "$dir" && pwd)"
-	log_info "Using temporary directory: $dir"
-	
-	log_info "Building fetch container..."
-	"$CONTAINER_CMD" build -t docker-brew-alpine-fetch . || {
-		log_error "Failed to build fetch container"
-		rm -rf "$dir"
-		return 1
-	}
-	
-	log_info "Fetching Alpine release files..."
-	
-	# Special handling for Podman on macOS
-	if [[ "$OSTYPE" == "darwin"* ]] && [ "$CONTAINER_CMD" = "podman" ]; then
-		log_info "Detected Podman on macOS - ensuring directory is accessible to Podman VM"
-		# Verify the directory is created and accessible
-		if [ ! -w "$dir" ]; then
-			log_error "Directory is not writable: $dir"
-			rm -rf "$dir"
-			return 1
-		fi
-	fi
-	
-	"$CONTAINER_CMD" run \
-		${MIRROR+ -e "MIRROR=$MIRROR"} \
-		--user "$(id -u)" --rm \
-		-v "$dir:/out" \
-		docker-brew-alpine-fetch "$branch" /out || {
-		log_error "Failed to fetch release files"
-		if [[ "$OSTYPE" == "darwin"* ]] && [ "$CONTAINER_CMD" = "podman" ]; then
-			log_error "Podman on macOS may require specific mount points."
-			log_error "Try: 'podman machine ssh' and check if volume mounts are configured."
-			log_error "Directory used: $dir"
-		fi
-		rm -rf "$dir"
-		return 1
-	}
-	
-	log_info "Verifying checksums..."
-	(cd "$dir" && sha512sum -c checksums.sha512) || {
-		log_error "Checksum verification failed"
-		rm -rf "$dir"
-		return 1
-	}
-	
-	log_success "Temporary directory created: $dir"
+	dir="$(create_temp_directory)"
+	fetch_alpine_release "$branch" "$dir"
+	verify_checksums "$dir"
 	
 	# Run tests if bats is available
 	if command -v bats >/dev/null 2>&1; then
-		run_tests "$branch" "$dir" || {
-			log_error "Tests failed, cleaning up"
-			rm -rf "$dir"
-			return 1
-		}
+		run_tests "$branch" "$dir"
 	else
 		log_info "Skipping tests (bats not installed)"
 	fi
 	
 	echo ""
+	log_success "Preparation completed successfully!"
 	log_info "To organize Dockerfiles into version directories run:"
 	echo ""
 	echo "  $SCRIPT_NAME organize $branch $dir"
@@ -207,105 +261,68 @@ prepare() {
 	
 	# Export for use by 'all' command
 	TMPDIR="$dir"
+	# Prevent automatic cleanup since user needs this directory
+	unset CLEANUP_TEMP_DIR
 }
 
-# Organize Dockerfiles into version/architecture structure
-organize_dockerfiles() {
-	local branch="${1:?Branch name required}"
-	local dir="${2:?Directory path required}"
-	local version
-	local target_dir
-	local arch_dir
+# Determine target directory name based on branch
+get_target_directory() {
+	local branch="$1"
+	local version="$2"
 	
-	if [ ! -d "$dir" ]; then
-		log_error "Directory does not exist: $dir"
-		show_help
-		exit "$EXIT_INVALID_ARGS"
-	fi
-	
-	# Check if directory is empty or doesn't have expected files
-	if [ ! "$(ls -A "$dir" 2>/dev/null)" ]; then
-		log_error "Directory is empty: $dir"
-		log_error "Make sure the 'prepare' command completed successfully before running 'organize'"
-		exit "$EXIT_INVALID_ARGS"
-	fi
-	
-	if [ ! -f "$dir/VERSION" ]; then
-		log_error "VERSION file not found in: $dir"
-		log_error "Directory contents:"
-		ls -la "$dir" >&2
-		log_error "Make sure the 'prepare' command completed successfully before running 'organize'"
-		exit "$EXIT_INVALID_ARGS"
-	fi
-	
-	version="$(cat "$dir/VERSION")"
-	
-	# For edge branch, use 'edge' as directory name instead of version number
-	if [ "$branch" = "edge" ]; then
-		target_dir="${SCRIPT_DIR}/edge"
-		log_info "Organizing Dockerfiles for edge branch (version: $version)"
+	if [[ "$branch" == "edge" ]]; then
+		echo "${SCRIPT_DIR}/edge"
 	else
-		target_dir="${SCRIPT_DIR}/${version}"
-		log_info "Organizing Dockerfiles for version $version"
+		echo "${SCRIPT_DIR}/${version}"
 	fi
+}
+
+# Prompt user for directory overwrite confirmation
+confirm_overwrite() {
+	local target_dir="$1"
 	
-	# Create version directory if it doesn't exist
-	if [ -d "$target_dir" ]; then
-		log_info "Version directory already exists: $target_dir"
-		if [ -t 0 ]; then
-			# Interactive mode - ask user
-			read -p "Do you want to overwrite it? (y/N): " -n 1 -r
-			echo
-			if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-				log_error "Operation cancelled by user"
-				exit "$EXIT_INVALID_ARGS"
-			fi
-		else
-			# Non-interactive mode - fail safely
-			log_error "Version directory already exists. Remove it first or run interactively."
-			exit "$EXIT_INVALID_ARGS"
-		fi
+	[[ ! -d "$target_dir" ]] && return 0
+	
+	log_info "Version directory already exists: $target_dir"
+	
+	if [[ -t 0 ]]; then
+		# Interactive mode - ask user
+		read -p "Do you want to overwrite it? (y/N): " -n 1 -r
+		echo
+		[[ $REPLY =~ ^[Yy]$ ]] || die "$EXIT_INVALID_ARGS" "Operation cancelled by user"
 		rm -rf "$target_dir"
+	else
+		# Non-interactive mode - fail safely
+		die "$EXIT_INVALID_ARGS" "Version directory already exists. Remove it first or run interactively."
+	fi
+}
+
+# Copy architecture Dockerfiles to target directory
+copy_architecture_files() {
+	local arch_src="$1"
+	local target_dir="$2"
+	local arch_name
+	
+	arch_name="$(basename "$arch_src")"
+	
+	# Skip if not a valid architecture directory
+	if [[ ! -f "$arch_src/Dockerfile" ]]; then
+		log_info "Skipping $arch_name (no Dockerfile found)"
+		return 0
 	fi
 	
-	mkdir -p "$target_dir"
-	log_success "Created version directory: $target_dir"
+	local arch_dir="$target_dir/$arch_name"
+	mkdir -p "$arch_dir"
 	
-	# Copy VERSION file to version directory
-	cp "$dir/VERSION" "$target_dir/" || {
-		log_error "Failed to copy VERSION file"
-		exit 1
-	}
-	
-	# Process each architecture directory
-	for arch_src in "$dir"/*/; do
-		[ -d "$arch_src" ] || continue
-		
-		local arch_name
-		arch_name="$(basename "$arch_src")"
-		
-		# Skip if not a valid architecture directory (must contain Dockerfile)
-		if [ ! -f "$arch_src/Dockerfile" ]; then
-			log_info "Skipping $arch_name (no Dockerfile found)"
-			continue
-		fi
-		
-		arch_dir="$target_dir/$arch_name"
-		mkdir -p "$arch_dir"
-		
-		log_info "Copying Dockerfile for architecture: $arch_name"
-		
-		# Copy all files from architecture directory
-		cp -r "$arch_src"* "$arch_dir/" || {
-			log_error "Failed to copy files for $arch_name"
-			exit 1
-		}
-		
-		log_success "Created: $arch_dir/Dockerfile"
-	done
-	
-	# Clean up temporary directory
-	rm -rf "$dir"
+	log_info "Copying Dockerfile for architecture: $arch_name"
+	cp -r "$arch_src"* "$arch_dir/" || die 1 "Failed to copy files for $arch_name"
+	log_success "Created: $arch_dir/Dockerfile"
+}
+
+# Display organized directory structure
+show_directory_structure() {
+	local target_dir="$1"
+	local dir_name="$(basename "$target_dir")"
 	
 	echo ""
 	log_success "Dockerfiles organized successfully!"
@@ -313,15 +330,48 @@ organize_dockerfiles() {
 	log_info "Directory structure:"
 	tree -L 2 "$target_dir" 2>/dev/null || find "$target_dir" -maxdepth 2 -type f -name "Dockerfile" | sort
 	echo ""
-	
-	# Use the directory name (edge or version) for git instructions
-	local dir_name
-	dir_name="$(basename "$target_dir")"
-	
 	log_info "You can now commit these changes to git:"
 	echo "  git add ${dir_name}"
 	echo "  git commit -m 'feat: add Alpine ${dir_name} Dockerfiles'"
 	echo ""
+}
+
+# Organize Dockerfiles into version/architecture structure
+organize_dockerfiles() {
+	local branch="${1:?Branch name required}"
+	local dir="${2:?Directory path required}"
+	
+	validate_directory "$dir" "source directory"
+	require_file "$dir/VERSION" "VERSION file"
+	
+	local version target_dir
+	version="$(cat "$dir/VERSION")"
+	target_dir="$(get_target_directory "$branch" "$version")"
+	
+	# Log what we're doing
+	if [[ "$branch" == "edge" ]]; then
+		log_info "Organizing Dockerfiles for edge branch (version: $version)"
+	else
+		log_info "Organizing Dockerfiles for version $version"
+	fi
+	
+	# Handle existing directory
+	confirm_overwrite "$target_dir"
+	
+	# Create version directory and copy VERSION file
+	mkdir -p "$target_dir"
+	log_success "Created version directory: $target_dir"
+	cp "$dir/VERSION" "$target_dir/" || die 1 "Failed to copy VERSION file"
+	
+	# Process each architecture directory
+	for arch_src in "$dir"/*/; do
+		[[ -d "$arch_src" ]] || continue
+		copy_architecture_files "$arch_src" "$target_dir"
+	done
+	
+	# Cleanup and display results
+	rm -rf "$dir"
+	show_directory_structure "$target_dir"
 }
 
 # Display help information
@@ -395,53 +445,37 @@ EOF
 # Main execution
 main() {
 	local cmd="${1:-}"
-	local branch
-	local dir
 	
-	# Show help immediately if requested
-	if [ "$cmd" = "help" ] || [ "$cmd" = "--help" ] || [ "$cmd" = "-h" ] || [ $# -eq 0 ]; then
+	# Show help if requested or no arguments
+	if [[ "$cmd" =~ ^(help|--help|-h)$ || $# -eq 0 ]]; then
 		show_help
 		exit "$EXIT_SUCCESS"
 	fi
 	
-	# Validate basic dependencies first (git, sha512sum)
+	# Validate basic dependencies (git, sha512sum)
 	validate_dependencies false
 	
 	shift
-	
-	branch="${1:-$DEFAULT_BRANCH}"
-	dir="${2:-}"
+	local branch="${1:-$DEFAULT_BRANCH}"
+	local dir="${2:-}"
 	
 	case "$cmd" in
 		prepare)
 			prepare "$branch"
 			;;
 		test)
-			# Validate bats is available for test command
 			validate_dependencies true
-			if [ -z "$dir" ]; then
-				log_error "Directory argument required for test command"
-				show_help
-				exit "$EXIT_INVALID_ARGS"
-			fi
+			[[ -n "$dir" ]] || die "$EXIT_INVALID_ARGS" "Directory argument required for test command"
 			run_tests "$branch" "$dir"
 			;;
 		organize)
-			if [ -z "$dir" ]; then
-				log_error "Directory argument required for organize command"
-				show_help
-				exit "$EXIT_INVALID_ARGS"
-			fi
+			[[ -n "$dir" ]] || die "$EXIT_INVALID_ARGS" "Directory argument required for organize command"
 			organize_dockerfiles "$branch" "$dir"
 			;;
 		all)
 			prepare "$branch"
-			if [ -n "${TMPDIR:-}" ]; then
-				organize_dockerfiles "$branch" "$TMPDIR"
-			else
-				log_error "TMPDIR not set after prepare"
-				exit 1
-			fi
+			[[ -n "${TMPDIR:-}" ]] || die 1 "TMPDIR not set after prepare"
+			organize_dockerfiles "$branch" "$TMPDIR"
 			;;
 		*)
 			log_error "Unknown command: $cmd"
