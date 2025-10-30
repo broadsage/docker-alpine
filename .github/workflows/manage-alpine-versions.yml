@@ -363,12 +363,33 @@ jobs:
               core.info(`Creating EOL warning issue for ${version}`);
               const body = `## Alpine Linux ${version} End of Life Warning\n\nAlpine Linux ${version} will reach End of Life (EOL) in **${days} days** on **${eolDate}**.\n\n### Actions Required\n\n- [ ] Review if we should continue supporting ${version} post-EOL\n- [ ] Check if any users specifically need ${version}\n- [ ] Plan migration path to newer versions\n- [ ] Prepare deprecation PR when EOL is reached\n\n---\n\n*This issue was automatically created by the manage-alpine-versions workflow*`;
 
+              // Ensure labels exist with desired colors
+              const labelsToEnsure = [
+                { name: 'alpine-eol', color: 'ffcc00', description: 'Alpine EOL warnings' },
+                { name: 'maintenance', color: '1d76db', description: 'Maintenance related tasks' }
+              ];
+
+              for (const lbl of labelsToEnsure) {
+                try {
+                  await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name: lbl.name });
+                } catch (err) {
+                  // Label does not exist - create it
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: lbl.name,
+                    color: lbl.color,
+                    description: lbl.description
+                  });
+                }
+              }
+
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 title,
                 body,
-                labels: ['alpine-eol','maintenance']
+                labels: labelsToEnsure.map(l => l.name)
               });
             }
 
