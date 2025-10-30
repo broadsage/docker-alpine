@@ -43,13 +43,13 @@ Images are published to GitHub Container Registry (ghcr.io) as multi-architectur
 
 ```bash
 # Pull edge image (multi-arch)
-docker pull ghcr.io/broadsage-containers/alpine:edge
+docker pull ghcr.io/broadsage/alpine:edge
 
 # Pull specific version (multi-arch)
-docker pull ghcr.io/broadsage-containers/alpine:3.19.9
+docker pull ghcr.io/broadsage/alpine:3.19.9
 
 # Pull latest stable (multi-arch)
-docker pull ghcr.io/broadsage-containers/alpine:latest
+docker pull ghcr.io/broadsage/alpine:latest
 
 # Docker automatically pulls the correct architecture for your platform
 # Supported: linux/amd64, linux/arm64, linux/arm/v7, linux/arm/v6, 

@@ -23,7 +23,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: broadsage-containers/alpine
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   detect-versions:
