@@ -1,0 +1,526 @@
+name: Manage Alpine Version Lifecycle
+
+on:
+  schedule:
+    # Run weekly on Mondays at 9 AM UTC to check for new releases and EOL dates
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: false
+        type: choice
+        options:
+          - 'check-all'
+          - 'check-new-releases'
+          - 'check-eol'
+        default: 'check-all'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  ALPINE_RELEASES_URL: https://alpinelinux.org/releases/
+
+jobs:
+  detect-lifecycle-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      new_releases: ${{ steps.detect.outputs.new_releases }}
+      eol_warnings: ${{ steps.detect.outputs.eol_warnings }}
+      eol_reached: ${{ steps.detect.outputs.eol_reached }}
+      has_new_releases: ${{ steps.detect.outputs.has_new_releases }}
+      has_eol_warnings: ${{ steps.detect.outputs.has_eol_warnings }}
+      has_eol_reached: ${{ steps.detect.outputs.has_eol_reached }}
+    
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Detect version lifecycle changes
+        id: detect
+        env:
+          ACTION: ${{ inputs.action || 'check-all' }}
+        run: |
+          set -uo pipefail
+          
+          echo "Fetching Alpine Linux release schedule..."
+          
+          # Fetch the releases page
+          RELEASES_HTML=$(curl -sSfL "$ALPINE_RELEASES_URL") || {
+            echo "❌ Failed to fetch Alpine releases page"
+            exit 1
+          }
+          
+          # Extract supported versions from the HTML table
+          # Looking for rows with EOL dates that have "main" or "main and community" support
+          # Format: | v3.22 | 2025-05-30 | ... | • 2027-05-01 | main and community |
+          
+          echo "Parsing Alpine release table..."
+          
+          # Get all currently supported versions with their EOL dates
+          SUPPORTED_VERSIONS=$(echo "$RELEASES_HTML" | \
+            grep -E '<td>v[0-9]+\.[0-9]+</td>' | \
+            sed -n 's/.*<td>\(v[0-9]\+\.[0-9]\+\)<\/td>.*/\1/p' | \
+            head -20)  # Limit to recent versions
+          
+          echo "Found versions in Alpine releases page:"
+          echo "$SUPPORTED_VERSIONS"
+          
+          # Get currently tracked versions in this repo
+          CURRENT_DIRS=$(find . -maxdepth 1 -type d -name "3.*" -o -name "edge" | \
+            sed 's|^\./||' | grep -v "^\." | sort)
+          
+          echo ""
+          echo "Currently tracked versions in repo:"
+          echo "$CURRENT_DIRS"
+          
+          # Detect new releases (versions on Alpine site but not in repo)
+          NEW_RELEASES=()
+          for version in $SUPPORTED_VERSIONS; do
+            # Convert v3.22 to 3.22
+            version_num=${version#v}
+            
+            # Check if directory exists
+            if [ ! -d "$version_num" ] && [ "$version_num" != "edge" ]; then
+              echo "🆕 New release detected: $version_num"
+              NEW_RELEASES+=("$version_num")
+            fi
+          done
+          
+          # Get current date for EOL calculations
+          CURRENT_DATE=$(date +%s)
+          THIRTY_DAYS=$((30 * 24 * 60 * 60))
+          
+          EOL_WARNINGS=()
+          EOL_REACHED=()
+          
+          # Check EOL dates for tracked versions
+          for dir in $CURRENT_DIRS; do
+            # Skip edge - it never reaches EOL
+            if [ "$dir" = "edge" ]; then
+              continue
+            fi
+            
+            # Extract EOL date from HTML for this version
+            # The EOL date is marked with • before the date
+            version_row=$(echo "$RELEASES_HTML" | \
+              grep -A 5 "<td>v${dir}</td>" | \
+              grep -oP '• \K[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+            
+            if [ -z "$version_row" ]; then
+              echo "⚠️  Could not find EOL date for version $dir"
+              continue
+            fi
+            
+            EOL_DATE=$(date -d "$version_row" +%s 2>/dev/null) || {
+              echo "⚠️  Invalid EOL date format for $dir: $version_row"
+              continue
+            }
+            
+            DAYS_UNTIL_EOL=$(( (EOL_DATE - CURRENT_DATE) / (24 * 60 * 60) ))
+            
+            echo "Version $dir: EOL date $version_row (${DAYS_UNTIL_EOL} days)"
+            
+            # Check if within 30 days of EOL
+            if [ $DAYS_UNTIL_EOL -le 30 ] && [ $DAYS_UNTIL_EOL -gt 0 ]; then
+              echo "⚠️  Version $dir will reach EOL in ${DAYS_UNTIL_EOL} days"
+              EOL_WARNINGS+=("${dir}:${version_row}:${DAYS_UNTIL_EOL}")
+            fi
+            
+            # Check if already reached EOL
+            if [ $DAYS_UNTIL_EOL -le 0 ]; then
+              echo "🛑 Version $dir has reached EOL (${version_row})"
+              EOL_REACHED+=("${dir}:${version_row}")
+            fi
+          done
+          
+          # Output results
+          if [ ${#NEW_RELEASES[@]} -gt 0 ]; then
+            echo "has_new_releases=true" >> $GITHUB_OUTPUT
+            NEW_JSON=$(printf '%s\n' "${NEW_RELEASES[@]}" | jq -R . | jq -s -c .)
+            echo "new_releases=${NEW_JSON}" >> $GITHUB_OUTPUT
+            echo "✅ New releases detected: ${NEW_RELEASES[*]}"
+          else
+            echo "has_new_releases=false" >> $GITHUB_OUTPUT
+            echo "new_releases=[]" >> $GITHUB_OUTPUT
+            echo "✅ No new releases detected"
+          fi
+          
+          if [ ${#EOL_WARNINGS[@]} -gt 0 ]; then
+            echo "has_eol_warnings=true" >> $GITHUB_OUTPUT
+            EOL_WARN_JSON=$(printf '%s\n' "${EOL_WARNINGS[@]}" | jq -R . | jq -s -c .)
+            echo "eol_warnings=${EOL_WARN_JSON}" >> $GITHUB_OUTPUT
+            echo "⚠️  EOL warnings: ${EOL_WARNINGS[*]}"
+          else
+            echo "has_eol_warnings=false" >> $GITHUB_OUTPUT
+            echo "eol_warnings=[]" >> $GITHUB_OUTPUT
+            echo "✅ No EOL warnings"
+          fi
+          
+          if [ ${#EOL_REACHED[@]} -gt 0 ]; then
+            echo "has_eol_reached=true" >> $GITHUB_OUTPUT
+            EOL_REACHED_JSON=$(printf '%s\n' "${EOL_REACHED[@]}" | jq -R . | jq -s -c .)
+            echo "eol_reached=${EOL_REACHED_JSON}" >> $GITHUB_OUTPUT
+            echo "🛑 EOL reached: ${EOL_REACHED[*]}"
+          else
+            echo "has_eol_reached=false" >> $GITHUB_OUTPUT
+            echo "eol_reached=[]" >> $GITHUB_OUTPUT
+            echo "✅ No versions past EOL"
+          fi
+
+  scaffold-new-version:
+    needs: detect-lifecycle-changes
+    if: needs.detect-lifecycle-changes.outputs.has_new_releases == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.detect-lifecycle-changes.outputs.new_releases) }}
+    
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.3 liblua5.3-dev luarocks
+          sudo luarocks install http
+          sudo luarocks install lyaml
+          sudo luarocks install luafilesystem
+          sudo luarocks install cqueues
+
+      - name: Prepare new version using prepare-branch.sh
+        env:
+          NEW_VERSION: ${{ matrix.version }}
+        run: |
+          echo "Preparing Alpine ${NEW_VERSION} using prepare-branch.sh..."
+          
+          # Convert 3.22 to v3.22 for Alpine branch name
+          ALPINE_BRANCH="v${NEW_VERSION}"
+          
+          # Run the prepare-branch.sh script with 'all' command
+          # This fetches minirootfs, creates Dockerfiles, and organizes into version/arch structure
+          chmod +x prepare-branch.sh
+          ./prepare-branch.sh all "${ALPINE_BRANCH}"
+          
+          echo "✅ Successfully prepared ${NEW_VERSION}"
+          
+          # Show the created structure
+          tree -L 2 "${NEW_VERSION}" || find "${NEW_VERSION}" -type f
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.6.0
+        with:
+          name: new-version-${{ matrix.version }}
+          path: |
+            ${{ matrix.version }}/
+          retention-days: 7
+
+  create-new-version-pr:
+    needs: [detect-lifecycle-changes, scaffold-new-version]
+    if: needs.detect-lifecycle-changes.outputs.has_new_releases == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Download all new version artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: artifacts
+
+      - name: Copy new versions
+        run: |
+          for dir in artifacts/new-version-*; do
+            if [ -d "$dir" ]; then
+              version=$(basename "$dir" | sed 's/new-version-//')
+              echo "Copying new version: $version"
+              cp -r "$dir/"* "$version/" || true
+            fi
+          done
+
+      - name: Verify changes
+        run: |
+          git status
+          git diff --stat
+
+      - name: Create Pull Request for new versions
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            feat: Add support for new Alpine Linux versions
+            
+            New versions detected: ${{ join(fromJson(needs.detect-lifecycle-changes.outputs.new_releases), ', ') }}
+            
+            Automatically scaffolded directory structure and Dockerfiles.
+          branch: alpine-new-versions-${{ github.run_number }}
+          delete-branch: true
+          title: '🆕 Add support for new Alpine Linux versions'
+          body: |
+            ## 🏔️ New Alpine Linux Version Support
+            
+            This PR adds support for newly released Alpine Linux versions.
+            
+            ### 📦 New Versions
+            
+            ${{ join(fromJson(needs.detect-lifecycle-changes.outputs.new_releases), ', ') }}
+            
+            ### 🔧 What's Included
+            
+            - ✅ Directory structure for all architectures
+            - ✅ Placeholder Dockerfiles (version will be updated by sync workflow)
+            - ✅ VERSION file with initial release version
+            
+            ### ✔️ Next Steps
+            
+            1. **Review the scaffolded structure** - Ensure all architectures are present
+            2. **Merge this PR** - This adds the new version directories
+            3. **Sync workflow will run** - Within 12 hours, the sync workflow will:
+               - Fetch actual minirootfs archives
+               - Update VERSION files with correct patch versions
+               - Update Dockerfiles with correct archive names
+            4. **Build workflow triggers** - Images will be built and pushed to GHCR
+            
+            ### 📋 Manual Tasks (if needed)
+            
+            - [ ] Check if new architectures were added (e.g., new riscv64 support)
+            - [ ] Update dependabot.yml if needed (already uses directory wildcard)
+            - [ ] Review Alpine release notes for breaking changes
+            
+            ### 🤖 Automation
+            
+            This PR was automatically created by the `manage-alpine-versions` workflow.
+            - **Triggered**: ${{ github.event_name }}
+            - **Run ID**: ${{ github.run_id }}
+            
+            ---
+            
+            *Automated by manage-alpine-versions workflow*
+          labels: |
+            alpine-new-version
+            enhancement
+            automated
+          assignees: ${{ github.repository_owner }}
+          reviewers: ${{ github.repository_owner }}
+
+  create-eol-warning-issues:
+    needs: detect-lifecycle-changes
+    if: needs.detect-lifecycle-changes.outputs.has_eol_warnings == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        warning: ${{ fromJson(needs.detect-lifecycle-changes.outputs.eol_warnings) }}
+    
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Parse warning data
+        id: parse
+        env:
+          WARNING_DATA: ${{ matrix.warning }}
+        run: |
+          # Format: version:eol_date:days_remaining
+          IFS=':' read -r VERSION EOL_DATE DAYS <<< "$WARNING_DATA"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "eol_date=${EOL_DATE}" >> $GITHUB_OUTPUT
+          echo "days=${DAYS}" >> $GITHUB_OUTPUT
+
+      - name: Check if issue already exists
+        id: check_issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          ISSUE_TITLE="Alpine ${VERSION} approaching EOL"
+          EXISTING=$(gh issue list --repo ${{ github.repository }} \
+            --search "in:title \"${ISSUE_TITLE}\"" \
+            --state open --json number --jq '.[0].number' || echo "")
+          
+          if [ -n "$EXISTING" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Issue already exists: #${EXISTING}"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "No existing issue found"
+          fi
+
+      - name: Create EOL warning issue
+        if: steps.check_issue.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.parse.outputs.version }}
+          EOL_DATE: ${{ steps.parse.outputs.eol_date }}
+          DAYS: ${{ steps.parse.outputs.days }}
+        run: |
+          gh issue create \
+            --repo ${{ github.repository }} \
+            --title "⚠️ Alpine ${VERSION} approaching EOL" \
+            --label "alpine-eol,maintenance" \
+            --body "## Alpine Linux ${VERSION} End of Life Warning
+
+          Alpine Linux ${VERSION} will reach End of Life (EOL) in **${DAYS} days** on **${EOL_DATE}**.
+
+          ### 📋 Actions Required
+
+          - [ ] Review if we should continue supporting ${VERSION} post-EOL
+          - [ ] Check if any users specifically need ${VERSION}
+          - [ ] Plan migration path to newer versions
+          - [ ] Prepare deprecation PR when EOL is reached
+
+          ### 🔗 References
+
+          - [Alpine Linux Releases](${{ env.ALPINE_RELEASES_URL }})
+          - Alpine ${VERSION} EOL Date: ${EOL_DATE}
+
+          ### 🤖 Automation
+
+          When EOL is reached, the \`manage-alpine-versions\` workflow will automatically:
+          - Create a PR to remove this version
+          - Update sync workflow to exclude it
+          - Update dependabot configuration
+
+          ---
+
+          *This issue was automatically created by the manage-alpine-versions workflow*"
+
+  deprecate-eol-versions:
+    needs: detect-lifecycle-changes
+    if: needs.detect-lifecycle-changes.outputs.has_eol_reached == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Prepare EOL deprecation
+        id: prepare
+        env:
+          EOL_VERSIONS: ${{ needs.detect-lifecycle-changes.outputs.eol_reached }}
+        run: |
+          echo "Preparing deprecation for EOL versions..."
+          
+          # Parse the EOL versions array
+          VERSIONS=$(echo "$EOL_VERSIONS" | jq -r '.[]' | cut -d: -f1)
+          VERSIONS_FORMATTED=$(echo "$VERSIONS" | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
+          
+          echo "versions_list=${VERSIONS_FORMATTED}" >> $GITHUB_OUTPUT
+          
+          # Create deprecation notice
+          cat > DEPRECATION_NOTICE.md <<EOF
+          # Alpine Linux Version Deprecation Notice
+
+          The following Alpine Linux versions have reached their End of Life (EOL) date:
+
+          EOF
+          
+          for version_data in $(echo "$EOL_VERSIONS" | jq -r '.[]'); do
+            IFS=':' read -r version eol_date <<< "$version_data"
+            echo "- **Alpine ${version}** - EOL: ${eol_date}" >> DEPRECATION_NOTICE.md
+          done
+          
+          cat >> DEPRECATION_NOTICE.md <<EOF
+
+          These versions are no longer receiving security updates from the Alpine Linux project.
+
+          ## Recommended Actions
+
+          - Migrate to a supported version (latest stable or edge)
+          - Update your Dockerfiles to use a newer Alpine base
+          - Review Alpine's [release schedule](https://alpinelinux.org/releases/)
+
+          ## Timeline
+
+          - **Now**: Versions marked as deprecated
+          - **+30 days**: Versions will be removed from this repository
+          - **+60 days**: Historical images may be pruned from registries
+
+          EOF
+
+      - name: Create Pull Request for EOL deprecation
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            chore: Deprecate EOL Alpine Linux versions
+            
+            Versions that reached EOL: ${{ steps.prepare.outputs.versions_list }}
+            
+            These versions are no longer supported by Alpine Linux.
+          branch: alpine-eol-deprecation-${{ github.run_number }}
+          delete-branch: true
+          title: '🛑 Deprecate EOL Alpine Linux versions'
+          body: |
+            ## 🛑 End of Life Version Deprecation
+            
+            This PR deprecates Alpine Linux versions that have reached their End of Life (EOL) date.
+            
+            ### 📦 Affected Versions
+            
+            ${{ steps.prepare.outputs.versions_list }}
+            
+            ### ⚠️ Important
+            
+            These versions are **no longer receiving security updates** from the Alpine Linux project.
+            
+            ### 🔧 What This PR Does
+            
+            - ✅ Adds deprecation notice to repository
+            - ⚠️ **Does NOT remove** version directories yet (grace period)
+            - ℹ️ Documents EOL status for users
+            
+            ### 📋 Next Steps After Merge
+            
+            1. **Immediate**: Users are notified via deprecation notice
+            2. **+30 days**: Create PR to remove EOL version directories
+            3. **+60 days**: Consider pruning old images from registries
+            
+            ### 🔗 References
+            
+            - [Alpine Linux Release Schedule](https://alpinelinux.org/releases/)
+            - [Alpine Security Policy](https://security.alpinelinux.org/)
+            
+            ### 🤖 Automation
+            
+            This PR was automatically created by the `manage-alpine-versions` workflow.
+            - **Triggered**: ${{ github.event_name }}
+            - **Run ID**: ${{ github.run_id }}
+            
+            ---
+            
+            *Automated by manage-alpine-versions workflow*
+          labels: |
+            alpine-eol
+            deprecation
+            maintenance
+          assignees: ${{ github.repository_owner }}
+          reviewers: ${{ github.repository_owner }}
