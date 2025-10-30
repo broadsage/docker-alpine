@@ -87,9 +87,10 @@ jobs:
               continue
             }
             
+            # Parse version from YAML
+            # The YAML structure has version before flavor, so we search for the alpine-minirootfs block
             UPSTREAM_VERSION=$(echo "$UPSTREAM_YAML" | \
-              grep -A10 "flavor: alpine-minirootfs" | \
-              grep "version:" | head -1 | awk '{print $2}')
+              awk '/flavor: alpine-minirootfs/ {found=1} found && /version:/ {print $2; exit}')
             
             if [ -z "$UPSTREAM_VERSION" ]; then
               echo "⚠️  Could not parse version from YAML for $branch, skipping"
