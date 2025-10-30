@@ -1,206 +1,27 @@
 version: 2
 updates:
+  # GitHub Actions dependencies
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
 
-  - package-ecosystem: docker
-    directory: /3.19/aarch64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.19/armhf
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.19/armv7
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.19/ppc64le
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.19/s390x
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.19/x86
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.19/x86_64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.20/aarch64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.20/armhf
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.20/armv7
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.20/ppc64le
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.20/riscv64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.20/s390x
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.20/x86
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.20/x86_64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.21/aarch64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.21/armhf
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.21/armv7
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.21/ppc64le
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.21/riscv64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.21/s390x
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.21/x86
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.21/x86_64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.22/aarch64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.22/armhf
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.22/armv7
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.22/ppc64le
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.22/riscv64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.22/s390x
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.22/x86
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /3.22/x86_64
-    schedule:
-      interval: daily
-
+  # Docker base images - grouped by version
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /edge/aarch64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /edge/armhf
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /edge/armv7
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /edge/ppc64le
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /edge/riscv64
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /edge/s390x
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /edge/x86
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /edge/x86_64
-    schedule:
-      interval: daily
+      interval: weekly
+      day: tuesday
+    open-pull-requests-limit: 10
+    groups:
+      alpine-base:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - docker
