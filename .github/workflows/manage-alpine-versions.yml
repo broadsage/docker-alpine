@@ -335,64 +335,42 @@ jobs:
           echo "eol_date=${EOL_DATE}" >> $GITHUB_OUTPUT
           echo "days=${DAYS}" >> $GITHUB_OUTPUT
 
-      - name: Check if issue already exists
-        id: check_issue
+      - name: Ensure EOL warning issue exists (create if missing)
+        uses: actions/github-script@v6
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.parse.outputs.version }}
-        run: |
-          ISSUE_TITLE="Alpine ${VERSION} approaching EOL"
-          EXISTING=$(gh issue list --repo ${{ github.repository }} \
-            --search "in:title \"${ISSUE_TITLE}\"" \
-            --state open --json number --jq '.[0].number' || echo "")
-          
-          if [ -n "$EXISTING" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Issue already exists: #${EXISTING}"
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "No existing issue found"
-          fi
-
-      - name: Create EOL warning issue
-        if: steps.check_issue.outputs.exists == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.parse.outputs.version }}
           EOL_DATE: ${{ steps.parse.outputs.eol_date }}
           DAYS: ${{ steps.parse.outputs.days }}
-        run: |
-          gh issue create \
-            --repo ${{ github.repository }} \
-            --title "⚠️ Alpine ${VERSION} approaching EOL" \
-            --label "alpine-eol,maintenance" \
-            --body "## Alpine Linux ${VERSION} End of Life Warning
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const version = process.env.VERSION;
+            const eolDate = process.env.EOL_DATE;
+            const days = process.env.DAYS;
+            const title = `⚠️ Alpine ${version} approaching EOL`;
 
-          Alpine Linux ${VERSION} will reach End of Life (EOL) in **${DAYS} days** on **${EOL_DATE}**.
+            // Check for existing open issues with the same title
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
 
-          ### 📋 Actions Required
+            if (issues.some(i => i.title === title)) {
+              core.info(`Issue already exists for ${version}`);
+            } else {
+              core.info(`Creating EOL warning issue for ${version}`);
+              const body = `## Alpine Linux ${version} End of Life Warning\n\nAlpine Linux ${version} will reach End of Life (EOL) in **${days} days** on **${eolDate}**.\n\n### Actions Required\n\n- [ ] Review if we should continue supporting ${version} post-EOL\n- [ ] Check if any users specifically need ${version}\n- [ ] Plan migration path to newer versions\n- [ ] Prepare deprecation PR when EOL is reached\n\n---\n\n*This issue was automatically created by the manage-alpine-versions workflow*`;
 
-          - [ ] Review if we should continue supporting ${VERSION} post-EOL
-          - [ ] Check if any users specifically need ${VERSION}
-          - [ ] Plan migration path to newer versions
-          - [ ] Prepare deprecation PR when EOL is reached
-
-          ### 🔗 References
-
-          - [Alpine Linux Releases](https://alpinelinux.org/releases/)
-          - [EndofLife.date API](https://endoflife.date/alpine-linux)
-          - Alpine ${VERSION} EOL Date: ${EOL_DATE}
-
-          ### 🤖 Automation
-
-          When EOL is reached, the \`manage-alpine-versions\` workflow will automatically:
-          - Create a PR to remove this version
-          - Update sync workflow to exclude it
-          - Update dependabot configuration
-
-          ---
-
-          *This issue was automatically created by the manage-alpine-versions workflow*"
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['alpine-eol','maintenance']
+              });
+            }
 
   deprecate-eol-versions:
     needs: detect-lifecycle-changes
