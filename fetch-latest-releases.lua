@@ -1,6 +1,6 @@
 #!/usr/bin/lua5.3
 
--- script to fetch and parse latest-releases.yaml from master site
+-- script to fetch and parse latest-releases.yaml from main site
 -- and fetch the latest minirootfs images for all available branches
 
 local request = require("http.request")

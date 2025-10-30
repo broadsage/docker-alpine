@@ -3,14 +3,14 @@ name: Build and Push Alpine Images
 on:
   push:
     branches:
-      - master
+      - main
     paths:
       - 'edge/**'
       - '3.*/**'
       - '.github/workflows/build-and-push.yml'
   pull_request:
     branches:
-      - master
+      - main
     paths:
       - 'edge/**'
       - '3.*/**'
@@ -150,7 +150,7 @@ jobs:
             org.opencontainers.image.vendor=Broadsage Corporation Limited
             org.opencontainers.image.base.name=scratch
             org.opencontainers.image.ref.name=${{ matrix.version }}
-            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/master/README.md
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md
             alpine.architecture=${{ matrix.architecture }}
             alpine.version=${{ steps.meta.outputs.version }}
           cache-from: type=gha

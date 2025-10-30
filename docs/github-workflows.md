@@ -10,7 +10,7 @@ Automatically builds and publishes multi-architecture Docker images to GitHub Co
 
 **Triggers:**
 
-- Push to `master` branch (when Alpine version directories change)
+- Push to `main` branch (when Alpine version directories change)
 - Pull requests (builds without pushing)
 - Manual workflow dispatch with version selection
 
