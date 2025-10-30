@@ -85,8 +85,10 @@ jobs:
           - x86_64
     
     permissions:
-      contents: read
+      contents: write
       packages: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -288,6 +290,52 @@ jobs:
             echo "Creating manifest: latest"
             eval ${MANIFEST_CMD}
           fi
+
+      - name: Inspect manifest and capture digest
+        id: manifest
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [ "${{ matrix.version }}" = "edge" ]; then
+            MANIFEST_TAG="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:edge"
+          else
+            MANIFEST_TAG="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${VERSION}"
+          fi
+
+          echo "Inspecting manifest: ${MANIFEST_TAG}"
+          # Use buildx imagetools inspect to get digest
+          RAW=$(docker buildx imagetools inspect "${MANIFEST_TAG}" --raw 2>/dev/null || true)
+          if [ -z "${RAW}" ]; then
+            echo "Failed to inspect manifest ${MANIFEST_TAG}" >&2
+            exit 1
+          fi
+          DIGEST=$(echo "${RAW}" | jq -r '.Descriptor.digest // .descriptor.digest // .manifests[0].digest // .Digest' | head -n1)
+          if [ -z "${DIGEST}" ] || [ "${DIGEST}" = "null" ]; then
+            echo "Unable to determine manifest digest for ${MANIFEST_TAG}" >&2
+            exit 1
+          fi
+          echo "manifest_digest=${DIGEST}" >> $GITHUB_OUTPUT
+          echo "manifest_tag=${MANIFEST_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Generate SBOM (Anchore)
+        id: generate-sbom
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.manifest.outputs.manifest_tag }}
+          format: 'spdx-json'
+          output-file: 'sbom-${{ matrix.version }}.spdx.json'
+          artifact-name: 'sbom-${{ matrix.version }}'
+
+      - name: Attest SBOM (actions/attest-sbom)
+        id: attest
+        uses: actions/attest-sbom@v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
+          subject-digest: ${{ steps.manifest.outputs.manifest_digest }}
+          sbom-path: 'sbom-${{ matrix.version }}.spdx.json'
+          push-to-registry: true
+          show-summary: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   cleanup-temp-tags:
     needs: [detect-versions, build-and-push, create-manifest]
