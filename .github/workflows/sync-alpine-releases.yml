@@ -1,0 +1,286 @@
+name: Sync Alpine Upstream Releases
+
+on:
+  schedule:
+    # Check twice daily at 6 AM and 6 PM UTC
+    - cron: '0 6,18 * * *'
+  workflow_dispatch:
+    inputs:
+      branches:
+        description: 'Branches to check (comma-separated: edge,3.22,3.21 or "all")'
+        required: false
+        default: 'all'
+      force:
+        description: 'Force update even if versions match'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  MIRROR: https://dl-cdn.alpinelinux.org/alpine
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    outputs:
+      has_updates: ${{ steps.detect.outputs.has_updates }}
+      updated_branches: ${{ steps.detect.outputs.updated_branches }}
+      update_details: ${{ steps.detect.outputs.update_details }}
+    
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Detect upstream version changes
+        id: detect
+        env:
+          FORCE_UPDATE: ${{ inputs.force }}
+          CHECK_BRANCHES: ${{ inputs.branches }}
+        run: |
+          set -euo pipefail
+          
+          # Determine which branches to check
+          if [ "$CHECK_BRANCHES" = "all" ] || [ -z "$CHECK_BRANCHES" ]; then
+            BRANCHES=(edge 3.19 3.20 3.21 3.22)
+          else
+            IFS=',' read -ra BRANCHES <<< "$CHECK_BRANCHES"
+          fi
+          
+          UPDATED=()
+          DETAILS=""
+          
+          echo "Checking Alpine releases for branches: ${BRANCHES[*]}"
+          
+          for branch in "${BRANCHES[@]}"; do
+            branch=$(echo "$branch" | xargs)  # trim whitespace
+            
+            # Map directory name to Alpine branch name
+            if [ "$branch" = "edge" ]; then
+              ALPINE_BRANCH="edge"
+            else
+              ALPINE_BRANCH="v${branch}"
+            fi
+            
+            echo "Checking branch: $branch (Alpine: $ALPINE_BRANCH)"
+            
+            # Check if branch directory exists
+            if [ ! -d "$branch" ]; then
+              echo "Directory $branch does not exist, skipping"
+              continue
+            fi
+            
+            # Fetch upstream version from x86_64 (reference architecture)
+            UPSTREAM_URL="${MIRROR}/${ALPINE_BRANCH}/releases/x86_64/latest-releases.yaml"
+            echo "Fetching: $UPSTREAM_URL"
+            
+            UPSTREAM_VERSION=$(curl -sSfL "$UPSTREAM_URL" | \
+              grep -A10 "flavor: alpine-minirootfs" | \
+              grep "version:" | head -1 | awk '{print $2}')
+            
+            if [ -z "$UPSTREAM_VERSION" ]; then
+              echo "Failed to fetch upstream version for $branch"
+              continue
+            fi
+            
+            # Get local version
+            if [ -f "$branch/VERSION" ]; then
+              LOCAL_VERSION=$(cat "$branch/VERSION" | tr -d '\n\r')
+            else
+              LOCAL_VERSION="none"
+            fi
+            
+            echo "Branch: $branch | Local: $LOCAL_VERSION | Upstream: $UPSTREAM_VERSION"
+            
+            # Check if update is needed
+            if [ "$UPSTREAM_VERSION" != "$LOCAL_VERSION" ] || [ "$FORCE_UPDATE" = "true" ]; then
+              echo "✓ Update available for $branch: $LOCAL_VERSION → $UPSTREAM_VERSION"
+              UPDATED+=("$branch")
+              DETAILS="${DETAILS}- **${branch}**: \`${LOCAL_VERSION}\` → \`${UPSTREAM_VERSION}\`\n"
+            else
+              echo "✓ No update needed for $branch (already at $LOCAL_VERSION)"
+            fi
+          done
+          
+          # Output results
+          if [ ${#UPDATED[@]} -gt 0 ]; then
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            # Convert array to JSON
+            UPDATED_JSON=$(printf '%s\n' "${UPDATED[@]}" | jq -R . | jq -s -c .)
+            echo "updated_branches=${UPDATED_JSON}" >> $GITHUB_OUTPUT
+            echo -e "update_details<<EOF" >> $GITHUB_OUTPUT
+            echo -e "$DETAILS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "Updates needed for: ${UPDATED[*]}"
+          else
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+            echo "updated_branches=[]" >> $GITHUB_OUTPUT
+            echo "update_details=No updates available" >> $GITHUB_OUTPUT
+            echo "No updates needed for any branch"
+          fi
+
+  fetch-and-update:
+    needs: check-updates
+    if: needs.check-updates.outputs.has_updates == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ${{ fromJson(needs.check-updates.outputs.updated_branches) }}
+    
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: main
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.3 liblua5.3-dev luarocks
+          sudo luarocks install http
+          sudo luarocks install lyaml
+          sudo luarocks install luafilesystem
+          sudo luarocks install cqueues
+
+      - name: Fetch latest Alpine releases
+        env:
+          BRANCH: ${{ matrix.branch }}
+        run: |
+          echo "Fetching latest releases for branch: $BRANCH"
+          
+          # Map directory name to Alpine branch name for the fetch script
+          if [ "$BRANCH" = "edge" ]; then
+            ALPINE_BRANCH="edge"
+          else
+            ALPINE_BRANCH="v${BRANCH}"
+          fi
+          
+          # Run the fetch script
+          lua fetch-latest-releases.lua "$ALPINE_BRANCH" "$BRANCH"
+          
+          # Verify VERSION file was updated
+          if [ -f "$BRANCH/VERSION" ]; then
+            NEW_VERSION=$(cat "$BRANCH/VERSION")
+            echo "Updated $BRANCH to version: $NEW_VERSION"
+          else
+            echo "ERROR: VERSION file not created for $BRANCH"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.6.0
+        with:
+          name: alpine-${{ matrix.branch }}
+          path: |
+            ${{ matrix.branch }}/
+          retention-days: 7
+
+  create-pull-request:
+    needs: [check-updates, fetch-and-update]
+    if: needs.check-updates.outputs.has_updates == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: artifacts
+
+      - name: Copy updated branches
+        run: |
+          # Copy all updated branches from artifacts
+          for dir in artifacts/alpine-*; do
+            if [ -d "$dir" ]; then
+              branch=$(basename "$dir" | sed 's/alpine-//')
+              echo "Copying updates for branch: $branch"
+              cp -r "$dir/"* "$branch/" || true
+            fi
+          done
+
+      - name: Verify changes
+        run: |
+          # Show what changed
+          git status
+          git diff --stat
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            chore: Update Alpine Linux releases
+            
+            ${{ needs.check-updates.outputs.update_details }}
+            
+            Automated update from upstream Alpine Linux releases.
+          branch: alpine-sync-${{ github.run_number }}
+          delete-branch: true
+          title: '🔄 Update Alpine Linux to latest releases'
+          body: |
+            ## 🏔️ Alpine Linux Version Update
+            
+            This PR updates Alpine Linux branches to their latest upstream versions.
+            
+            ### 📦 Version Changes
+            
+            ${{ needs.check-updates.outputs.update_details }}
+            
+            ### 🔍 What's Updated
+            
+            - ✅ VERSION files
+            - ✅ Alpine minirootfs archives
+            - ✅ SHA512 checksums
+            - ✅ Dockerfiles
+            
+            ### ✔️ Verification Checklist
+            
+            - [ ] All architectures have matching versions
+            - [ ] Checksums validated (see `checksums.sha512` files)
+            - [ ] Dockerfiles generated correctly
+            - [ ] No security advisories for these versions
+            
+            ### 🤖 Automation
+            
+            This PR was automatically created by the `sync-alpine-releases` workflow.
+            - **Triggered**: ${{ github.event_name }}
+            - **Run ID**: ${{ github.run_id }}
+            - **Timestamp**: ${{ github.event.repository.updated_at }}
+            
+            ### 📋 Next Steps
+            
+            1. Review the version changes above
+            2. Check Alpine Linux release notes if needed
+            3. Approve and merge to trigger build workflow
+            4. Images will be built and pushed to GHCR automatically
+            5. After 48h soak time, stable versions will be promoted to Docker Hub
+            
+            ---
+            
+            *Automated by sync-alpine-releases workflow*
+          labels: |
+            alpine-update
+            automated
+            dependencies
+          assignees: ${{ github.repository_owner }}
+          reviewers: ${{ github.repository_owner }}
