@@ -81,12 +81,18 @@ jobs:
             UPSTREAM_URL="${MIRROR}/${ALPINE_BRANCH}/releases/x86_64/latest-releases.yaml"
             echo "Fetching: $UPSTREAM_URL"
             
-            UPSTREAM_VERSION=$(curl -sSfL "$UPSTREAM_URL" | \
+            # Fetch with error handling
+            UPSTREAM_YAML=$(curl -sSfL "$UPSTREAM_URL" 2>&1) || {
+              echo "⚠️  Failed to fetch from Alpine CDN for $branch, skipping"
+              continue
+            }
+            
+            UPSTREAM_VERSION=$(echo "$UPSTREAM_YAML" | \
               grep -A10 "flavor: alpine-minirootfs" | \
               grep "version:" | head -1 | awk '{print $2}')
             
             if [ -z "$UPSTREAM_VERSION" ]; then
-              echo "Failed to fetch upstream version for $branch"
+              echo "⚠️  Could not parse version from YAML for $branch, skipping"
               continue
             fi
             
