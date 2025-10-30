@@ -50,16 +50,22 @@ jobs:
           
           echo "Fetching Alpine Linux release data from endoflife.date API..."
           
-          # Fetch release data from endoflife.date API
-          RELEASES_JSON=$(curl -sSfL "https://endoflife.date/api/alpine-linux.json") || {
-            echo "❌ Failed to fetch Alpine releases from endoflife.date API"
+          # Fetch release data from endoflife.date product API (contains result.releases)
+          RELEASES_FULL=$(curl -sSfL "https://endoflife.date/api/v1/products/alpine-linux/") || {
+            echo "❌ Failed to fetch Alpine releases from endoflife.date product API"
+            exit 1
+          }
+
+          # Extract the releases array (result.releases)
+          RELEASES_JSON=$(echo "$RELEASES_FULL" | jq -c '.result.releases') || {
+            echo "❌ Failed to parse releases array from API response"
             exit 1
           }
           
           echo "Parsing Alpine release data..."
           
           # Get all currently maintained versions (not EOL)
-          # Filter: isMaintained: true OR isEol: false
+          # Use fields from the product API releases array
           SUPPORTED_VERSIONS=$(echo "$RELEASES_JSON" | \
             jq -r '.[] | select(.isMaintained == true) | .name')
           
