@@ -45,7 +45,7 @@ jobs:
           FORCE_UPDATE: ${{ inputs.force }}
           CHECK_BRANCHES: ${{ inputs.branches }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           
           # Determine which branches to check
           if [ "$CHECK_BRANCHES" = "all" ] || [ -z "$CHECK_BRANCHES" ]; then
