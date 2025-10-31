@@ -147,23 +147,16 @@ jobs:
             *)        PLATFORM="linux/amd64" ;;
           esac
           echo "platform=${PLATFORM}" >> $GITHUB_OUTPUT
-          
-          # Create temporary tag for building (will be used only for manifest creation)
-          if [ "${{ matrix.version }}" = "edge" ]; then
-            TAG="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:build-edge-${{ matrix.architecture }}-${{ github.run_id }}"
-          else
-            TAG="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:build-${VERSION}-${{ matrix.architecture }}-${{ github.run_id }}"
-          fi
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
         if: steps.check-dockerfile.outputs.exists == 'true'
+        id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: ${{ matrix.version }}/${{ matrix.architecture }}
           platforms: ${{ steps.meta.outputs.platform }}
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tag }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           labels: |
             org.opencontainers.image.title=Alpine Linux
             org.opencontainers.image.description=Alpine Linux minimal container image - ${{ matrix.architecture }} architecture
@@ -181,6 +174,23 @@ jobs:
             alpine.version=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Export digest
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+          echo "Exported digest: $digest for ${{ matrix.architecture }}"
+
+      - name: Upload digest
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.6.0
+        with:
+          name: digests-${{ matrix.version }}-${{ matrix.architecture }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
 
   create-manifest:
     needs: [detect-versions, build-and-push]
@@ -206,6 +216,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
+      - name: Download digests
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.version }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
@@ -220,91 +240,31 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Create and push manifest
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          RUN_ID="${{ github.run_id }}"
-          
-          # Determine available architectures
-          ARCHITECTURES=""
-          for arch in aarch64 armhf armv7 ppc64le riscv64 s390x x86 x86_64; do
-            if [ -f "${{ matrix.version }}/${arch}/Dockerfile" ]; then
-              ARCHITECTURES="${ARCHITECTURES} ${arch}"
-            fi
-          done
-          
-          # Create manifest for version-specific tag
-          if [ "${{ matrix.version }}" = "edge" ]; then
-            MANIFEST_TAG="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:edge"
-          else
-            MANIFEST_TAG="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${VERSION}"
-          fi
-          
-          # Build manifest create command using temporary build tags
-          MANIFEST_CMD="docker buildx imagetools create -t ${MANIFEST_TAG}"
-          for arch in ${ARCHITECTURES}; do
-            if [ "${{ matrix.version }}" = "edge" ]; then
-              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:build-edge-${arch}-${RUN_ID}"
-            else
-              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:build-${VERSION}-${arch}-${RUN_ID}"
-            fi
-          done
-          
-          echo "Creating manifest: ${MANIFEST_TAG}"
-          eval ${MANIFEST_CMD}
-          
-          # Also create major.minor tag for non-edge versions
-          if [ "${{ matrix.version }}" != "edge" ]; then
-            MAJOR_MINOR=$(echo ${{ matrix.version }} | cut -d. -f1-2)
-            MAJOR_MINOR_TAG="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${MAJOR_MINOR}"
-            
-            MANIFEST_CMD="docker buildx imagetools create -t ${MAJOR_MINOR_TAG}"
-            for arch in ${ARCHITECTURES}; do
-              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:build-${VERSION}-${arch}-${RUN_ID}"
-            done
-            
-            echo "Creating manifest: ${MAJOR_MINOR_TAG}"
-            eval ${MANIFEST_CMD}
-          fi
-
-      - name: Create latest tag for newest version
-        if: matrix.version != 'edge'
-        run: |
-          # Find the newest non-edge version
-          NEWEST=$(find . -maxdepth 1 -type d -name "3.*" -exec basename {} \; | sort -V | tail -1)
-          
-          if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
-            VERSION="${{ steps.version.outputs.version }}"
-            RUN_ID="${{ github.run_id }}"
-            
-            # Determine available architectures
-            ARCHITECTURES=""
-            for arch in aarch64 armhf armv7 ppc64le riscv64 s390x x86 x86_64; do
-              if [ -f "${{ matrix.version }}/${arch}/Dockerfile" ]; then
-                ARCHITECTURES="${ARCHITECTURES} ${arch}"
-              fi
-            done
-            
-            MANIFEST_CMD="docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:latest"
-            for arch in ${ARCHITECTURES}; do
-              MANIFEST_CMD="${MANIFEST_CMD} ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:build-${VERSION}-${arch}-${RUN_ID}"
-            done
-            
-            echo "Creating manifest: latest"
-            eval ${MANIFEST_CMD}
-          fi
-
-      - name: Inspect manifest and capture digest
         id: manifest
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          IMAGE_NAME="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
+          
+          # Prepare tags
           if [ "${{ matrix.version }}" = "edge" ]; then
-            MANIFEST_TAG="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:edge"
+            TAGS="${IMAGE_NAME}:edge"
           else
-            MANIFEST_TAG="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${VERSION}"
+            MAJOR_MINOR=$(echo ${{ matrix.version }} | cut -d. -f1-2)
+            TAGS="${IMAGE_NAME}:${VERSION} ${IMAGE_NAME}:${MAJOR_MINOR}"
+            
+            # Check if this is the newest non-edge version for 'latest' tag
+            NEWEST=$(find . -maxdepth 1 -type d -name "3.*" -exec basename {} \; | sort -V | tail -1)
+            if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
+              TAGS="${TAGS} ${IMAGE_NAME}:latest"
+            fi
           fi
-
-          echo "Inspecting manifest: ${MANIFEST_TAG}"
-          # Use buildx imagetools inspect to get digest
+          
+          # Build manifest from digests
+          docker buildx imagetools create $(printf -- "-t %s " ${TAGS}) \
+            $(printf "$IMAGE_NAME@sha256:%s " $(ls /tmp/digests))
+          
+          # Get the manifest digest for attestation
+          MANIFEST_TAG=$(echo ${TAGS} | awk '{print $1}')
           RAW=$(docker buildx imagetools inspect "${MANIFEST_TAG}" --raw 2>/dev/null || true)
           if [ -z "${RAW}" ]; then
             echo "Failed to inspect manifest ${MANIFEST_TAG}" >&2
@@ -317,6 +277,8 @@ jobs:
           fi
           echo "manifest_digest=${DIGEST}" >> $GITHUB_OUTPUT
           echo "manifest_tag=${MANIFEST_TAG}" >> $GITHUB_OUTPUT
+          echo "Created manifest with tags: ${TAGS}"
+          echo "Manifest digest: ${DIGEST}"
 
       - name: Generate SBOM (Anchore)
         id: generate-sbom
@@ -338,54 +300,3 @@ jobs:
           show-summary: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  cleanup-temp-tags:
-    needs: [detect-versions, build-and-push, create-manifest]
-    if: always() && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
-    
-    permissions:
-      packages: write
-
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
-        with:
-          egress-policy: audit
-
-      - name: Checkout repository
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-
-      - name: Delete temporary build tags
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RUN_ID="${{ github.run_id }}"
-          VERSION=$(cat ${{ matrix.version }}/VERSION | tr -d '\n' 2>/dev/null || echo "unknown")
-          
-          # Delete temporary tags for each architecture
-          for arch in aarch64 armhf armv7 ppc64le riscv64 s390x x86 x86_64; do
-            if [ -f "${{ matrix.version }}/${arch}/Dockerfile" ]; then
-              if [ "${{ matrix.version }}" = "edge" ]; then
-                TAG="build-edge-${arch}-${RUN_ID}"
-              else
-                TAG="build-${VERSION}-${arch}-${RUN_ID}"
-              fi
-              
-              echo "Attempting to delete temporary tag: ${TAG}"
-              
-              # Use GitHub API to delete the package version
-              # Note: This requires the package to exist; errors are ignored
-              curl -X DELETE \
-                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/user/packages/container/$(echo ${{ needs.detect-versions.outputs.image_name }} | cut -d'/' -f2)/versions?tag=${TAG}" \
-                2>/dev/null || echo "Tag ${TAG} may not exist or already deleted"
-            fi
-          done
-
