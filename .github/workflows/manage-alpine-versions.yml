@@ -336,7 +336,7 @@ jobs:
           echo "days=${DAYS}" >> $GITHUB_OUTPUT
 
       - name: Ensure EOL warning issue exists (create if missing)
-        uses: actions/github-script@v6
+        uses: actions/github-script@v8
         env:
           VERSION: ${{ steps.parse.outputs.version }}
           EOL_DATE: ${{ steps.parse.outputs.eol_date }}
