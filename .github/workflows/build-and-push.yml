@@ -283,7 +283,7 @@ jobs:
 
       - name: Generate SBOM (Anchore)
         id: generate-sbom
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
         with:
           image: ${{ steps.manifest.outputs.manifest_tag }}
           format: 'spdx-json'
@@ -292,7 +292,7 @@ jobs:
 
       - name: Attest SBOM (actions/attest-sbom)
         id: attest
-        uses: actions/attest-sbom@v3
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
         with:
           subject-name: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
           subject-digest: ${{ steps.manifest.outputs.manifest_digest }}
@@ -303,7 +303,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v3.7.0
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
 
       - name: Sign container image with Cosign
         run: |
@@ -320,7 +320,7 @@ jobs:
           COSIGN_EXPERIMENTAL: 1
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3.0.0
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-name: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
           subject-digest: ${{ steps.manifest.outputs.manifest_digest }}
@@ -328,7 +328,7 @@ jobs:
           show-summary: true
 
       - name: Run Snyk Container Scan
-        uses: snyk/actions/docker@master
+        uses: snyk/actions/docker@9adf32b1121593767fc3c057af55b55db032dc04 # master
         continue-on-error: true
         with:
           image: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}@${{ steps.manifest.outputs.manifest_digest }}
@@ -337,7 +337,7 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
       - name: Upload Snyk results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@5d5cd550d3e189c569da8f16ea8de2d821c9bf7a # v3.31.2
         if: always()
         with:
           sarif_file: snyk.sarif
@@ -359,7 +359,7 @@ jobs:
 
       - name: Delete untagged/digest-only images
         continue-on-error: true
-        uses: actions/delete-package-versions@v5
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
         with:
           package-name: 'alpine'
           package-type: 'container'
