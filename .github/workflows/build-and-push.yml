@@ -301,6 +301,40 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Sign container image with Cosign
+        run: |
+          # Get all tags for this version
+          VERSION="${{ steps.version.outputs.version }}"
+          IMAGE_NAME="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
+          
+          # Prepare tags list
+          if [ "${{ matrix.version }}" = "edge" ]; then
+            TAGS="${IMAGE_NAME}:edge"
+          else
+            MAJOR_MINOR=$(echo ${{ matrix.version }} | cut -d. -f1-2)
+            TAGS="${IMAGE_NAME}:${VERSION} ${IMAGE_NAME}:${MAJOR_MINOR}"
+            
+            # Check if this is the newest non-edge version for 'latest' tag
+            NEWEST=$(find . -maxdepth 1 -type d -name "3.*" -exec basename {} \; | sort -V | tail -1)
+            if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
+              TAGS="${TAGS} ${IMAGE_NAME}:latest"
+            fi
+          fi
+          
+          # Sign each tag using keyless signing with GitHub OIDC
+          echo "Signing images with Cosign using keyless signing..."
+          for tag in ${TAGS}; do
+            echo "Signing: ${tag}"
+            cosign sign --yes "${tag}"
+          done
+          
+          echo "✅ All images signed successfully!"
+        env:
+          COSIGN_EXPERIMENTAL: 1
+
   cleanup-digest-refs:
     needs: [detect-versions, build-and-push, create-manifest]
     if: always() && github.event_name != 'pull_request'

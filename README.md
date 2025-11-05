@@ -72,6 +72,82 @@ ENTRYPOINT ["mysql"]
 
 Only 4 seconds to build and results in a 41 MB image!
 
+## Security Features
+
+All images in this repository are built with enterprise-grade security features:
+
+### 🔒 Image Signing (Sigstore/Cosign)
+
+All images are cryptographically signed using [Sigstore Cosign](https://github.com/sigstore/cosign) with keyless signing via GitHub OIDC. This ensures the authenticity and integrity of the images.
+
+**Verify image signature:**
+
+```bash
+# Install cosign (if not already installed)
+# macOS: brew install cosign
+# Linux: See https://docs.sigstore.dev/cosign/installation/
+
+# Verify the signature
+cosign verify \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  ghcr.io/broadsage/alpine:3.22
+
+# Verify specific version
+cosign verify \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  ghcr.io/broadsage/alpine:3.22.2
+```
+
+### 📋 Software Bill of Materials (SBOM)
+
+Every image includes a Software Bill of Materials (SBOM) in SPDX format, providing complete transparency about all packages and dependencies.
+
+**View SBOM:**
+
+```bash
+# View SBOM attestation
+cosign verify-attestation \
+  --type spdx \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  ghcr.io/broadsage/alpine:3.22 | jq -r '.payload' | base64 -d | jq
+```
+
+### ✅ Supply Chain Security
+
+- **Pinned Dependencies**: All GitHub Actions are pinned to specific SHA256 hashes
+- **Hardened Runners**: Network egress auditing with Step Security
+- **Automated Updates**: Dependabot keeps dependencies current
+- **Security Scanning**: OpenSSF Scorecard and dependency review
+- **Clean Build Process**: Reproducible builds from official Alpine minirootfs
+
+### 🏗️ Multi-Architecture Support
+
+Images are built natively for 8 architectures:
+
+- `linux/amd64` (x86_64)
+- `linux/arm64` (aarch64)
+- `linux/arm/v7` (armv7)
+- `linux/arm/v6` (armhf)
+- `linux/386` (x86)
+- `linux/ppc64le`
+- `linux/s390x`
+- `linux/riscv64`
+
+Docker automatically pulls the correct architecture for your platform.
+
+### 📦 Available Tags
+
+- `latest` - Latest stable version (currently 3.22.x)
+- `edge` - Rolling release from Alpine edge branch
+- `3.22`, `3.22.2` - Specific version tags
+- `3.21`, `3.21.5` - Previous stable versions
+- `3.20`, `3.19` - Older stable versions
+
+All tags point to multi-architecture manifests.
+
 ## Documentation
 
 - [About](docs/about.md) - Learn more about Alpine Linux, musl libc, and BusyBox
