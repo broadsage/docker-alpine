@@ -340,4 +340,3 @@ jobs:
           package-type: 'container'
           min-versions-to-keep: 0
           delete-only-untagged-versions: true
-          num-old-versions-to-delete: 1000
