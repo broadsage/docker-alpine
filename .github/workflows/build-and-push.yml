@@ -300,3 +300,26 @@ jobs:
           show-summary: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-digest-refs:
+    needs: [detect-versions, build-and-push, create-manifest]
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    
+    permissions:
+      packages: write
+    
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Delete untagged/digest-only images
+        continue-on-error: true
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: 'alpine'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: true
