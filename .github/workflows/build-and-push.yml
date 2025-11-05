@@ -306,32 +306,15 @@ jobs:
 
       - name: Sign container image with Cosign
         run: |
-          # Get all tags for this version
-          VERSION="${{ steps.version.outputs.version }}"
           IMAGE_NAME="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
+          DIGEST="${{ steps.manifest.outputs.manifest_digest }}"
           
-          # Prepare tags list
-          if [ "${{ matrix.version }}" = "edge" ]; then
-            TAGS="${IMAGE_NAME}:edge"
-          else
-            MAJOR_MINOR=$(echo ${{ matrix.version }} | cut -d. -f1-2)
-            TAGS="${IMAGE_NAME}:${VERSION} ${IMAGE_NAME}:${MAJOR_MINOR}"
-            
-            # Check if this is the newest non-edge version for 'latest' tag
-            NEWEST=$(find . -maxdepth 1 -type d -name "3.*" -exec basename {} \; | sort -V | tail -1)
-            if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
-              TAGS="${TAGS} ${IMAGE_NAME}:latest"
-            fi
-          fi
+          # Sign the image by digest (not tag) to ensure we sign the exact image
+          echo "Signing image by digest: ${IMAGE_NAME}@${DIGEST}"
+          cosign sign --yes "${IMAGE_NAME}@${DIGEST}"
           
-          # Sign each tag using keyless signing with GitHub OIDC
-          echo "Signing images with Cosign using keyless signing..."
-          for tag in ${TAGS}; do
-            echo "Signing: ${tag}"
-            cosign sign --yes "${tag}"
-          done
-          
-          echo "✅ All images signed successfully!"
+          echo "✅ Image signed successfully!"
+          echo "Note: Signature applies to all tags pointing to this digest"
         env:
           COSIGN_EXPERIMENTAL: 1
 
