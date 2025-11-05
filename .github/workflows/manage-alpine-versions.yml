@@ -259,7 +259,7 @@ jobs:
             New versions detected: ${{ join(fromJson(needs.detect-lifecycle-changes.outputs.new_releases), ', ') }}
             
             Automatically scaffolded directory structure and Dockerfiles.
-          branch: alpine-new-versions-${{ github.run_number }}
+          branch: alpine-new-versions-${{ github.run_id }}
           delete-branch: true
           title: '🆕 Add support for new Alpine Linux versions'
           body: |
@@ -306,8 +306,6 @@ jobs:
             alpine-new-version
             enhancement
             automated
-          assignees: ${{ github.repository_owner }}
-          reviewers: ${{ github.repository_owner }}
 
   create-eol-warning-issues:
     needs: detect-lifecycle-changes
@@ -461,7 +459,7 @@ jobs:
             Versions that reached EOL: ${{ steps.prepare.outputs.versions_list }}
             
             These versions are no longer supported by Alpine Linux.
-          branch: alpine-eol-deprecation-${{ github.run_number }}
+          branch: alpine-eol-deprecation-${{ github.run_id }}
           delete-branch: true
           title: '🛑 Deprecate EOL Alpine Linux versions'
           body: |
@@ -507,5 +505,3 @@ jobs:
             alpine-eol
             deprecation
             maintenance
-          assignees: ${{ github.repository_owner }}
-          reviewers: ${{ github.repository_owner }}
