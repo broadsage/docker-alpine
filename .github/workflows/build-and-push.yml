@@ -326,6 +326,22 @@ jobs:
           push-to-registry: true
           show-summary: true
 
+      - name: Run Snyk Container Scan
+        uses: snyk/actions/docker@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}@${{ steps.manifest.outputs.manifest_digest }}
+          args: --severity-threshold=high --sarif-file-output=snyk.sarif
+
+      - name: Upload Snyk results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk.sarif
+          category: snyk-container-${{ matrix.version }}
+
   cleanup-digest-refs:
     needs: [detect-versions, build-and-push, create-manifest]
     if: always() && github.event_name != 'pull_request'

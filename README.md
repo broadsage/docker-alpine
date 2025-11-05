@@ -138,11 +138,31 @@ cosign verify-attestation \
 gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 --owner broadsage
 ```
 
+### 🛡️ Vulnerability Scanning (Snyk)
+
+All images are scanned for security vulnerabilities using [Snyk Container](https://snyk.io/product/container-vulnerability-management/) with enterprise-grade vulnerability detection.
+
+**View security findings:**
+
+```bash
+# Check GitHub Security tab for vulnerability reports
+# https://github.com/broadsage/docker-alpine/security/code-scanning
+```
+
+Snyk scanning provides:
+
+- OS package vulnerability detection
+- High-severity threshold enforcement
+- Automatic security alerts
+- Integration with GitHub Security tab
+- Prioritized remediation guidance
+
 ### ✅ Supply Chain Security
 
 - **Image Signing**: Cryptographically signed with Sigstore/Cosign
 - **SBOM Generation**: Complete software bill of materials
 - **Build Provenance**: SLSA attestations for build transparency
+- **Vulnerability Scanning**: Snyk enterprise scanning with SARIF reporting
 - **Pinned Dependencies**: All GitHub Actions are pinned to specific SHA256 hashes
 - **Hardened Runners**: Network egress auditing with Step Security
 - **Automated Updates**: Dependabot keeps dependencies current
