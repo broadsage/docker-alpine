@@ -278,6 +278,7 @@ jobs:
           fi
           echo "manifest_digest=${DIGEST}" >> $GITHUB_OUTPUT
           echo "manifest_tag=${MANIFEST_TAG}" >> $GITHUB_OUTPUT
+          echo "manifest_tags=${TAGS}" >> $GITHUB_OUTPUT
           echo "Created manifest with tags: ${TAGS}"
           echo "Manifest digest: ${DIGEST}"
 
@@ -306,18 +307,18 @@ jobs:
         uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
 
       - name: Sign container image with Cosign
-        run: |
-          IMAGE_NAME="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
-          DIGEST="${{ steps.manifest.outputs.manifest_digest }}"
-          
-          # Sign the image by digest (not tag) to ensure we sign the exact image
-          echo "Signing image by digest: ${IMAGE_NAME}@${DIGEST}"
-          cosign sign --yes "${IMAGE_NAME}@${DIGEST}"
-          
-          echo "✅ Image signed successfully!"
-          echo "Note: Signature applies to all tags pointing to this digest"
         env:
-          COSIGN_EXPERIMENTAL: 1
+          DIGEST: ${{ steps.manifest.outputs.manifest_digest }}
+          TAGS: ${{ steps.manifest.outputs.manifest_tags }}
+        run: |
+          # Sign all tags pointing to this digest
+          images=""
+          for tag in ${TAGS}; do
+            images+="${tag}@${DIGEST} "
+          done
+          echo "Signing images: ${images}"
+          cosign sign --yes ${images}
+          echo "✅ Images signed successfully!"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
