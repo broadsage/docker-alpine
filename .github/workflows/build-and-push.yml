@@ -329,11 +329,11 @@ jobs:
       - name: Run Snyk Container Scan
         uses: snyk/actions/docker@master
         continue-on-error: true
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           image: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}@${{ steps.manifest.outputs.manifest_digest }}
           args: --severity-threshold=high --sarif-file-output=snyk.sarif
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
       - name: Upload Snyk results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
