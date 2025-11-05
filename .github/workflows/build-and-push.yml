@@ -156,7 +156,7 @@ jobs:
           context: ${{ matrix.version }}/${{ matrix.architecture }}
           platforms: ${{ steps.meta.outputs.platform }}
           push: ${{ github.event_name != 'pull_request' }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }},push-by-digest=true,push=${{ github.event_name != 'pull_request' }}
           labels: |
             org.opencontainers.image.title=Alpine Linux
             org.opencontainers.image.description=Alpine Linux minimal container image - ${{ matrix.architecture }} architecture
