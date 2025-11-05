@@ -318,6 +318,14 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: 1
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3.0.0
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
+          subject-digest: ${{ steps.manifest.outputs.manifest_digest }}
+          push-to-registry: true
+          show-summary: true
+
   cleanup-digest-refs:
     needs: [detect-versions, build-and-push, create-manifest]
     if: always() && github.event_name != 'pull_request'

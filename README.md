@@ -115,8 +115,34 @@ cosign verify-attestation \
   ghcr.io/broadsage/alpine:3.22 | jq -r '.payload' | base64 -d | jq
 ```
 
+### 🏗️ Build Provenance (SLSA)
+
+All images include SLSA build provenance attestations that provide verifiable information about how the image was built, including:
+
+- Build process details
+- Source repository and commit
+- Build environment
+- Build parameters
+
+**View provenance:**
+
+```bash
+# View build provenance attestation
+cosign verify-attestation \
+  --type slsaprovenance \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  ghcr.io/broadsage/alpine:3.22 | jq -r '.payload' | base64 -d | jq
+
+# Or using GitHub CLI
+gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 --owner broadsage
+```
+
 ### ✅ Supply Chain Security
 
+- **Image Signing**: Cryptographically signed with Sigstore/Cosign
+- **SBOM Generation**: Complete software bill of materials
+- **Build Provenance**: SLSA attestations for build transparency
 - **Pinned Dependencies**: All GitHub Actions are pinned to specific SHA256 hashes
 - **Hardened Runners**: Network egress auditing with Step Security
 - **Automated Updates**: Dependabot keeps dependencies current
