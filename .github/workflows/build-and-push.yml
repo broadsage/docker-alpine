@@ -20,9 +20,20 @@ on:
         description: 'Alpine version to build (e.g., edge, 3.19.9)'
         required: false
         default: 'all'
+      registry:
+        description: 'Registry to push to (ghcr, dockerhub, all)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - ghcr
+          - dockerhub
 
 env:
-  REGISTRY: ghcr.io
+  # Registry configurations
+  GHCR_REGISTRY: ghcr.io
+  DOCKERHUB_REGISTRY: docker.io
 
 permissions:
   contents: read
@@ -33,6 +44,7 @@ jobs:
     outputs:
       versions: ${{ steps.get-versions.outputs.versions }}
       image_name: ${{ steps.get-image-name.outputs.image_name }}
+      registries: ${{ steps.get-registries.outputs.registries }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
@@ -41,6 +53,23 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Determine target registries
+        id: get-registries
+        run: |
+          # Determine which registries to push to based on workflow input or default to both
+          REGISTRY_INPUT="${{ inputs.registry }}"
+          if [ -z "${REGISTRY_INPUT}" ] || [ "${REGISTRY_INPUT}" = "all" ]; then
+            REGISTRIES='["ghcr","dockerhub"]'
+          elif [ "${REGISTRY_INPUT}" = "ghcr" ]; then
+            REGISTRIES='["ghcr"]'
+          elif [ "${REGISTRY_INPUT}" = "dockerhub" ]; then
+            REGISTRIES='["dockerhub"]'
+          else
+            REGISTRIES='["ghcr","dockerhub"]'
+          fi
+          echo "registries=${REGISTRIES}" >> $GITHUB_OUTPUT
+          echo "Target registries: ${REGISTRIES}"
 
       - name: Compute image name
         id: get-image-name
@@ -74,6 +103,7 @@ jobs:
       fail-fast: false
       matrix:
         version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
+        registry: ${{ fromJson(needs.detect-versions.outputs.registries) }}
         architecture:
           - aarch64
           - armhf
@@ -110,6 +140,20 @@ jobs:
             echo "Dockerfile not found for ${{ matrix.version }}/${{ matrix.architecture }}, skipping"
           fi
 
+      - name: Set registry configuration
+        id: registry-config
+        run: |
+          # Set registry-specific configurations
+          if [ "${{ matrix.registry }}" = "ghcr" ]; then
+            echo "registry=${{ env.GHCR_REGISTRY }}" >> $GITHUB_OUTPUT
+            echo "username=${{ github.actor }}" >> $GITHUB_OUTPUT
+            echo "Registry: GHCR (ghcr.io)"
+          elif [ "${{ matrix.registry }}" = "dockerhub" ]; then
+            echo "registry=${{ env.DOCKERHUB_REGISTRY }}" >> $GITHUB_OUTPUT
+            echo "username=${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_OUTPUT
+            echo "Registry: DockerHub (docker.io)"
+          fi
+
       - name: Set up QEMU
         if: steps.check-dockerfile.outputs.exists == 'true'
         uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
@@ -119,12 +163,20 @@ jobs:
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - name: Log in to GitHub Container Registry
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request' && matrix.registry == 'ghcr'
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ${{ env.GHCR_REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to DockerHub
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request' && matrix.registry == 'dockerhub'
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ${{ env.DOCKERHUB_REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata
         if: steps.check-dockerfile.outputs.exists == 'true'
@@ -156,7 +208,7 @@ jobs:
           context: ${{ matrix.version }}/${{ matrix.architecture }}
           platforms: ${{ steps.meta.outputs.platform }}
           push: ${{ github.event_name != 'pull_request' }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }},push-by-digest=true,push=${{ github.event_name != 'pull_request' }}
+          outputs: type=image,name=${{ steps.registry-config.outputs.registry }}/${{ needs.detect-versions.outputs.image_name }},push-by-digest=true,push=${{ github.event_name != 'pull_request' }}
           labels: |
             org.opencontainers.image.title=Alpine Linux
             org.opencontainers.image.description=Alpine Linux minimal container image - ${{ matrix.architecture }} architecture
@@ -172,8 +224,8 @@ jobs:
             org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md
             alpine.architecture=${{ matrix.architecture }}
             alpine.version=${{ steps.meta.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.registry }}-${{ matrix.version }}-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.registry }}-${{ matrix.version }}-${{ matrix.architecture }}
 
       - name: Export digest
         if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
@@ -181,13 +233,13 @@ jobs:
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
-          echo "Exported digest: $digest for ${{ matrix.architecture }}"
+          echo "Exported digest: $digest for ${{ matrix.architecture }} to ${{ matrix.registry }}"
 
       - name: Upload digest
         if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v4.6.0
         with:
-          name: digests-${{ matrix.version }}-${{ matrix.architecture }}
+          name: digests-${{ matrix.registry }}-${{ matrix.version }}-${{ matrix.architecture }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -200,6 +252,7 @@ jobs:
       fail-fast: false
       matrix:
         version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
+        registry: ${{ fromJson(needs.detect-versions.outputs.registries) }}
     
     permissions:
       contents: read
@@ -221,18 +274,37 @@ jobs:
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           path: /tmp/digests
-          pattern: digests-${{ matrix.version }}-*
+          pattern: digests-${{ matrix.registry }}-${{ matrix.version }}-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - name: Log in to GitHub Container Registry
+        if: matrix.registry == 'ghcr'
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ${{ env.GHCR_REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to DockerHub
+        if: matrix.registry == 'dockerhub'
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ${{ env.DOCKERHUB_REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set registry configuration
+        id: registry-config
+        run: |
+          # Set registry-specific configurations
+          if [ "${{ matrix.registry }}" = "ghcr" ]; then
+            echo "registry=${{ env.GHCR_REGISTRY }}" >> $GITHUB_OUTPUT
+          elif [ "${{ matrix.registry }}" = "dockerhub" ]; then
+            echo "registry=${{ env.DOCKERHUB_REGISTRY }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Read VERSION file
         id: version
@@ -244,9 +316,10 @@ jobs:
         id: manifest
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          IMAGE_NAME="${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
+          REGISTRY="${{ steps.registry-config.outputs.registry }}"
+          IMAGE_NAME="${REGISTRY}/${{ needs.detect-versions.outputs.image_name }}"
           
-          # Prepare tags
+          # Prepare tags based on version
           if [ "${{ matrix.version }}" = "edge" ]; then
             TAGS="${IMAGE_NAME}:edge"
           else
@@ -279,6 +352,7 @@ jobs:
           echo "manifest_digest=${DIGEST}" >> $GITHUB_OUTPUT
           echo "manifest_tag=${MANIFEST_TAG}" >> $GITHUB_OUTPUT
           echo "manifest_tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "registry=${{ matrix.registry }}" >> $GITHUB_OUTPUT
           echo "Created manifest with tags: ${TAGS}"
           echo "Manifest digest: ${DIGEST}"
 
@@ -288,16 +362,17 @@ jobs:
         with:
           image: ${{ steps.manifest.outputs.manifest_tag }}
           format: 'spdx-json'
-          output-file: 'sbom-${{ matrix.version }}.spdx.json'
-          artifact-name: 'sbom-${{ matrix.version }}'
+          output-file: 'sbom-${{ matrix.registry }}-${{ matrix.version }}.spdx.json'
+          artifact-name: 'sbom-${{ matrix.registry }}-${{ matrix.version }}'
 
-      - name: Attest SBOM (actions/attest-sbom)
-        id: attest
+      - name: Attest SBOM (GHCR only - GitHub native attestations)
+        if: matrix.registry == 'ghcr'
+        id: attest-ghcr
         uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
+          subject-name: ${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
           subject-digest: ${{ steps.manifest.outputs.manifest_digest }}
-          sbom-path: 'sbom-${{ matrix.version }}.spdx.json'
+          sbom-path: 'sbom-${{ matrix.registry }}-${{ matrix.version }}.spdx.json'
           push-to-registry: true
           show-summary: true
         env:
@@ -311,29 +386,39 @@ jobs:
           DIGEST: ${{ steps.manifest.outputs.manifest_digest }}
           TAGS: ${{ steps.manifest.outputs.manifest_tags }}
         run: |
-          # Sign all tags pointing to this digest
+          # Sign all tags pointing to this digest using keyless signing
           images=""
           for tag in ${TAGS}; do
             images+="${tag}@${DIGEST} "
           done
-          echo "Signing images: ${images}"
+          echo "Signing images for ${{ matrix.registry }}: ${images}"
           cosign sign --yes ${images}
-          echo "✅ Images signed successfully!"
+          echo "✅ Images signed successfully for ${{ matrix.registry }}!"
 
-      - name: Attest build provenance
+      - name: Attest build provenance (GHCR only - GitHub native attestations)
+        if: matrix.registry == 'ghcr'
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
+          subject-name: ${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
           subject-digest: ${{ steps.manifest.outputs.manifest_digest }}
           push-to-registry: true
           show-summary: true
+
+      - name: Attest SBOM with Cosign (DockerHub - OCI attestations)
+        if: matrix.registry == 'dockerhub'
+        run: |
+          # Attach SBOM as attestation using Cosign for DockerHub
+          cosign attest --yes --type spdxjson \
+            --predicate sbom-${{ matrix.registry }}-${{ matrix.version }}.spdx.json \
+            ${{ steps.manifest.outputs.manifest_tag }}@${{ steps.manifest.outputs.manifest_digest }}
+          echo "✅ SBOM attestation attached to DockerHub image"
 
       - name: Run Snyk Container Scan
         uses: snyk/actions/docker@9adf32b1121593767fc3c057af55b55db032dc04 # master
         continue-on-error: true
         with:
-          image: ${{ env.REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}@${{ steps.manifest.outputs.manifest_digest }}
-          args: --severity-threshold=high --sarif-file-output=snyk.sarif
+          image: ${{ steps.manifest.outputs.manifest_tag }}@${{ steps.manifest.outputs.manifest_digest }}
+          args: --severity-threshold=high --sarif-file-output=snyk-${{ matrix.registry }}-${{ matrix.version }}.sarif
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
@@ -341,8 +426,8 @@ jobs:
         uses: github/codeql-action/upload-sarif@0499de31b99561a6d14a36a5f662c2a54f91beee # v4.31.2
         if: always()
         with:
-          sarif_file: snyk.sarif
-          category: snyk-container-${{ matrix.version }}
+          sarif_file: snyk-${{ matrix.registry }}-${{ matrix.version }}.sarif
+          category: snyk-container-${{ matrix.registry }}-${{ matrix.version }}
 
   cleanup-digest-refs:
     needs: [detect-versions, build-and-push, create-manifest]
@@ -358,7 +443,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Delete untagged/digest-only images
+      - name: Delete untagged/digest-only images from GHCR
         continue-on-error: true
         uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
         with:
