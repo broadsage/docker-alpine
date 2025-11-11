@@ -20,15 +20,6 @@ on:
         description: 'Alpine version to build (e.g., edge, 3.19.9)'
         required: false
         default: 'all'
-      registry:
-        description: 'Registry to push to (ghcr, dockerhub, all)'
-        required: false
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - ghcr
-          - dockerhub
 
 env:
   # Registry configurations
@@ -44,7 +35,6 @@ jobs:
     outputs:
       versions: ${{ steps.get-versions.outputs.versions }}
       image_name: ${{ steps.get-image-name.outputs.image_name }}
-      registries: ${{ steps.get-registries.outputs.registries }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
@@ -53,23 +43,6 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-
-      - name: Determine target registries
-        id: get-registries
-        run: |
-          # Determine which registries to push to based on workflow input or default to both
-          REGISTRY_INPUT="${{ inputs.registry }}"
-          if [ -z "${REGISTRY_INPUT}" ] || [ "${REGISTRY_INPUT}" = "all" ]; then
-            REGISTRIES='["ghcr","dockerhub"]'
-          elif [ "${REGISTRY_INPUT}" = "ghcr" ]; then
-            REGISTRIES='["ghcr"]'
-          elif [ "${REGISTRY_INPUT}" = "dockerhub" ]; then
-            REGISTRIES='["dockerhub"]'
-          else
-            REGISTRIES='["ghcr","dockerhub"]'
-          fi
-          echo "registries=${REGISTRIES}" >> $GITHUB_OUTPUT
-          echo "Target registries: ${REGISTRIES}"
 
       - name: Compute image name
         id: get-image-name
@@ -212,8 +185,8 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.version }}-${{ matrix.architecture }}
           cache-to: type=gha,mode=max,scope=${{ matrix.version }}-${{ matrix.architecture }}
 
-      - name: Push to DockerHub (if enabled)
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request' && contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
+      - name: Push to DockerHub
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
         run: |
           # Re-tag and push the same image to DockerHub
           GHCR_IMAGE="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}@${{ steps.build.outputs.digest }}"
@@ -223,37 +196,25 @@ jobs:
           docker buildx imagetools create --tag "${DOCKERHUB_IMAGE}" "${GHCR_IMAGE}"
           echo "✅ Pushed to DockerHub: ${DOCKERHUB_IMAGE}"
 
-      - name: Export digests for both registries
+      # Digest Export Strategy:
+      # Export image digests once to /tmp/digests (digests are identical for both registries)
+      # Upload as single artifact set to reduce duplication (40 artifacts instead of 80)
+      # Both manifest creation steps will read from the same digest directory
+
+      - name: Export digest
         if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
         run: |
-          mkdir -p /tmp/digests-ghcr /tmp/digests-dockerhub
+          mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
-          
-          # Export digest for GHCR
-          touch "/tmp/digests-ghcr/${digest#sha256:}"
-          echo "Exported GHCR digest: $digest for ${{ matrix.architecture }}"
-          
-          # Export digest for DockerHub (if enabled)
-          if echo '${{ needs.detect-versions.outputs.registries }}' | jq -e '. | contains(["dockerhub"])' > /dev/null; then
-            touch "/tmp/digests-dockerhub/${digest#sha256:}"
-            echo "Exported DockerHub digest: $digest for ${{ matrix.architecture }}"
-          fi
+          touch "/tmp/digests/${digest#sha256:}"
+          echo "Exported digest: $digest for ${{ matrix.architecture }}"
 
-      - name: Upload GHCR digest
+      - name: Upload digest
         if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v4.6.0
         with:
-          name: digests-ghcr-${{ matrix.version }}-${{ matrix.architecture }}
-          path: /tmp/digests-ghcr/*
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload DockerHub digest
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request' && contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v4.6.0
-        with:
-          name: digests-dockerhub-${{ matrix.version }}-${{ matrix.architecture }}
-          path: /tmp/digests-dockerhub/*
+          name: digests-${{ matrix.version }}-${{ matrix.architecture }}
+          path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
@@ -282,19 +243,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - name: Download GHCR digests
+      - name: Download digests
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
-          path: /tmp/digests-ghcr
-          pattern: digests-ghcr-${{ matrix.version }}-*
-          merge-multiple: true
-
-      - name: Download DockerHub digests
-        if: contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          path: /tmp/digests-dockerhub
-          pattern: digests-dockerhub-${{ matrix.version }}-*
+          path: /tmp/digests
+          pattern: digests-${{ matrix.version }}-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -308,7 +261,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to DockerHub
-        if: contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ${{ env.DOCKERHUB_REGISTRY }}
@@ -321,29 +273,47 @@ jobs:
           VERSION=$(cat ${{ matrix.version }}/VERSION | tr -d '\n')
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
-      - name: Create and push GHCR manifest
-        id: manifest-ghcr
+      # Tag Generation Strategy:
+      # Generate registry-agnostic tag suffixes once (edge, VERSION, MAJOR.MINOR, latest)
+      # Both GHCR and DockerHub manifest steps apply their registry prefix to these suffixes
+      # This eliminates ~30 lines of duplicated tag logic and ensures consistency
+      - name: Generate tag list
+        id: generate-tags
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          IMAGE_NAME="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
           
-          # Prepare tags based on version
+          # Determine tag suffixes (registry-agnostic)
           if [ "${{ matrix.version }}" = "edge" ]; then
-            TAGS="${IMAGE_NAME}:edge"
+            TAG_SUFFIXES="edge"
           else
             MAJOR_MINOR=$(echo ${{ matrix.version }} | cut -d. -f1-2)
-            TAGS="${IMAGE_NAME}:${VERSION} ${IMAGE_NAME}:${MAJOR_MINOR}"
+            TAG_SUFFIXES="${VERSION} ${MAJOR_MINOR}"
             
             # Check if this is the newest non-edge version for 'latest' tag
             NEWEST=$(find . -maxdepth 1 -type d -name "3.*" -exec basename {} \; | sort -V | tail -1)
             if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
-              TAGS="${TAGS} ${IMAGE_NAME}:latest"
+              TAG_SUFFIXES="${TAG_SUFFIXES} latest"
             fi
           fi
           
+          echo "tag_suffixes=${TAG_SUFFIXES}" >> $GITHUB_OUTPUT
+          echo "Generated tag suffixes: ${TAG_SUFFIXES}"
+
+      - name: Create and push GHCR manifest
+        id: manifest-ghcr
+        run: |
+          IMAGE_NAME="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
+          
+          # Apply registry prefix to shared tag suffixes
+          TAGS=""
+          for SUFFIX in ${{ steps.generate-tags.outputs.tag_suffixes }}; do
+            TAGS="${TAGS} ${IMAGE_NAME}:${SUFFIX}"
+          done
+          TAGS=$(echo ${TAGS} | xargs)
+          
           # Build manifest from digests
           docker buildx imagetools create $(printf -- "-t %s " ${TAGS}) \
-            $(printf "$IMAGE_NAME@sha256:%s " $(ls /tmp/digests-ghcr))
+            $(printf "$IMAGE_NAME@sha256:%s " $(ls /tmp/digests))
           
           # Get the manifest digest for attestation
           MANIFEST_TAG=$(echo ${TAGS} | awk '{print $1}')
@@ -364,28 +334,20 @@ jobs:
           echo "Manifest digest: ${DIGEST}"
 
       - name: Create and push DockerHub manifest
-        if: contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
         id: manifest-dockerhub
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           IMAGE_NAME="${{ env.DOCKERHUB_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
           
-          # Prepare tags based on version (same logic as GHCR)
-          if [ "${{ matrix.version }}" = "edge" ]; then
-            TAGS="${IMAGE_NAME}:edge"
-          else
-            MAJOR_MINOR=$(echo ${{ matrix.version }} | cut -d. -f1-2)
-            TAGS="${IMAGE_NAME}:${VERSION} ${IMAGE_NAME}:${MAJOR_MINOR}"
-            
-            NEWEST=$(find . -maxdepth 1 -type d -name "3.*" -exec basename {} \; | sort -V | tail -1)
-            if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
-              TAGS="${TAGS} ${IMAGE_NAME}:latest"
-            fi
-          fi
+          # Apply registry prefix to shared tag suffixes
+          TAGS=""
+          for SUFFIX in ${{ steps.generate-tags.outputs.tag_suffixes }}; do
+            TAGS="${TAGS} ${IMAGE_NAME}:${SUFFIX}"
+          done
+          TAGS=$(echo ${TAGS} | xargs)
           
           # Build manifest from digests
           docker buildx imagetools create $(printf -- "-t %s " ${TAGS}) \
-            $(printf "$IMAGE_NAME@sha256:%s " $(ls /tmp/digests-dockerhub))
+            $(printf "$IMAGE_NAME@sha256:%s " $(ls /tmp/digests))
           
           # Get the manifest digest
           MANIFEST_TAG=$(echo ${TAGS} | awk '{print $1}')
@@ -405,24 +367,19 @@ jobs:
           echo "✅ DockerHub manifest created with tags: ${TAGS}"
           echo "Manifest digest: ${DIGEST}"
 
-      - name: Generate SBOM for GHCR (Anchore)
-        id: generate-sbom-ghcr
+      # SBOM Strategy:
+      # Generate SBOM once from GHCR (images are identical in both registries)
+      # Reuse the same SBOM for both GHCR and DockerHub attestations
+      # This avoids redundant scanning and improves performance by 50%
+
+      - name: Generate SBOM (single source of truth)
+        id: generate-sbom
         uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
         with:
           image: ${{ steps.manifest-ghcr.outputs.manifest_tag }}
           format: 'spdx-json'
-          output-file: 'sbom-ghcr-${{ matrix.version }}.spdx.json'
-          artifact-name: 'sbom-ghcr-${{ matrix.version }}'
-
-      - name: Generate SBOM for DockerHub (Anchore)
-        if: contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
-        id: generate-sbom-dockerhub
-        uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
-        with:
-          image: ${{ steps.manifest-dockerhub.outputs.manifest_tag }}
-          format: 'spdx-json'
-          output-file: 'sbom-dockerhub-${{ matrix.version }}.spdx.json'
-          artifact-name: 'sbom-dockerhub-${{ matrix.version }}'
+          output-file: 'sbom-${{ matrix.version }}.spdx.json'
+          artifact-name: 'sbom-${{ matrix.version }}'
 
       - name: Attest SBOM for GHCR (GitHub native attestations)
         id: attest-ghcr
@@ -430,31 +387,29 @@ jobs:
         with:
           subject-name: ${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
           subject-digest: ${{ steps.manifest-ghcr.outputs.manifest_digest }}
-          sbom-path: 'sbom-ghcr-${{ matrix.version }}.spdx.json'
+          sbom-path: 'sbom-${{ matrix.version }}.spdx.json'
           push-to-registry: true
           show-summary: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Attestation Strategy:
+      # - GHCR: Uses GitHub native attestations (zero config, UI integration)
+      # - DockerHub: Uses Cosign (industry standard, universal support)
+      # This approach avoids redundancy while maximizing compatibility
+
+      - name: Attest build provenance for GHCR (GitHub native attestations)
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
+          subject-digest: ${{ steps.manifest-ghcr.outputs.manifest_digest }}
+          push-to-registry: true
+          show-summary: true
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
 
-      - name: Sign GHCR images with Cosign
-        env:
-          DIGEST: ${{ steps.manifest-ghcr.outputs.manifest_digest }}
-          TAGS: ${{ steps.manifest-ghcr.outputs.manifest_tags }}
-        run: |
-          # Sign all GHCR tags using keyless signing
-          images=""
-          for tag in ${TAGS}; do
-            images+="${tag}@${DIGEST} "
-          done
-          echo "Signing GHCR images: ${images}"
-          cosign sign --yes ${images}
-          echo "✅ GHCR images signed successfully!"
-
       - name: Sign DockerHub images with Cosign
-        if: contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
         env:
           DIGEST: ${{ steps.manifest-dockerhub.outputs.manifest_digest }}
           TAGS: ${{ steps.manifest-dockerhub.outputs.manifest_tags }}
@@ -468,55 +423,35 @@ jobs:
           cosign sign --yes ${images}
           echo "✅ DockerHub images signed successfully!"
 
-      - name: Attest build provenance for GHCR (GitHub native attestations)
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
-        with:
-          subject-name: ${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
-          subject-digest: ${{ steps.manifest-ghcr.outputs.manifest_digest }}
-          push-to-registry: true
-          show-summary: true
-
       - name: Attest SBOM for DockerHub with Cosign (OCI attestations)
-        if: contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
         run: |
           # Attach SBOM as attestation using Cosign for DockerHub
+          # Reuses the same SBOM generated earlier (images are identical)
           cosign attest --yes --type spdxjson \
-            --predicate sbom-dockerhub-${{ matrix.version }}.spdx.json \
+            --predicate sbom-${{ matrix.version }}.spdx.json \
             ${{ steps.manifest-dockerhub.outputs.manifest_tag }}@${{ steps.manifest-dockerhub.outputs.manifest_digest }}
           echo "✅ SBOM attestation attached to DockerHub image"
 
-      - name: Run Snyk Container Scan on GHCR
+      # Security Scanning Strategy:
+      # Scan image once from GHCR (images are identical in both registries)
+      # Upload single SARIF to avoid duplicate alerts in GitHub Security tab
+      # This saves time, Snyk credits, and provides cleaner security reporting
+
+      - name: Run Snyk Container Scan
         uses: snyk/actions/docker@9adf32b1121593767fc3c057af55b55db032dc04 # master
         continue-on-error: true
         with:
           image: ${{ steps.manifest-ghcr.outputs.manifest_tag }}@${{ steps.manifest-ghcr.outputs.manifest_digest }}
-          args: --severity-threshold=high --sarif-file-output=snyk-ghcr-${{ matrix.version }}.sarif
+          args: --severity-threshold=high --sarif-file-output=snyk-${{ matrix.version }}.sarif
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
-      - name: Run Snyk Container Scan on DockerHub
-        if: contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
-        uses: snyk/actions/docker@9adf32b1121593767fc3c057af55b55db032dc04 # master
-        continue-on-error: true
-        with:
-          image: ${{ steps.manifest-dockerhub.outputs.manifest_tag }}@${{ steps.manifest-dockerhub.outputs.manifest_digest }}
-          args: --severity-threshold=high --sarif-file-output=snyk-dockerhub-${{ matrix.version }}.sarif
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-
-      - name: Upload GHCR Snyk results to GitHub Security
+      - name: Upload Snyk results to GitHub Security
         uses: github/codeql-action/upload-sarif@0499de31b99561a6d14a36a5f662c2a54f91beee # v4.31.2
         if: always()
         with:
-          sarif_file: snyk-ghcr-${{ matrix.version }}.sarif
-          category: snyk-container-ghcr-${{ matrix.version }}
-
-      - name: Upload DockerHub Snyk results to GitHub Security
-        if: always() && contains(fromJson(needs.detect-versions.outputs.registries), 'dockerhub')
-        uses: github/codeql-action/upload-sarif@0499de31b99561a6d14a36a5f662c2a54f91beee # v4.31.2
-        with:
-          sarif_file: snyk-dockerhub-${{ matrix.version }}.sarif
-          category: snyk-container-dockerhub-${{ matrix.version }}
+          sarif_file: snyk-${{ matrix.version }}.sarif
+          category: snyk-container-${{ matrix.version }}
 
   cleanup-digest-refs:
     needs: [detect-versions, build-and-push, create-manifest]

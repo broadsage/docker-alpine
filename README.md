@@ -76,43 +76,65 @@ Only 4 seconds to build and results in a 41 MB image!
 
 All images in this repository are built with enterprise-grade security features:
 
-### 🔒 Image Signing (Sigstore/Cosign)
+### 🔒 Image Signing & Attestations
 
-All images are cryptographically signed using [Sigstore Cosign](https://github.com/sigstore/cosign) with keyless signing via GitHub OIDC. This ensures the authenticity and integrity of the images.
+Images are signed and attested using registry-specific best practices:
 
-**Verify image signature:**
+**For GHCR (ghcr.io)**: GitHub native attestations  
+**For DockerHub (docker.io)**: Sigstore Cosign signatures
+
+#### Verify GHCR Images (Recommended)
+
+```bash
+# Install GitHub CLI (if not already installed)
+# macOS: brew install gh
+# Linux: See https://github.com/cli/cli#installation
+
+# Verify GHCR image with GitHub Attestations
+gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 --owner broadsage
+
+# View detailed provenance and SBOM
+gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 \
+  --owner broadsage \
+  --format json | jq
+```
+
+#### Verify DockerHub Images
 
 ```bash
 # Install cosign (if not already installed)
 # macOS: brew install cosign
 # Linux: See https://docs.sigstore.dev/cosign/installation/
 
-# Verify the signature
+# Verify DockerHub image signature
 cosign verify \
   --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/broadsage/alpine:3.22
-
-# Verify specific version
-cosign verify \
-  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/broadsage/alpine:3.22.2
+  docker.io/broadsage/alpine:3.22
 ```
 
 ### 📋 Software Bill of Materials (SBOM)
 
 Every image includes a Software Bill of Materials (SBOM) in SPDX format, providing complete transparency about all packages and dependencies.
 
-**View SBOM:**
+#### View SBOM for GHCR Images
 
 ```bash
-# View SBOM attestation
+# GHCR: SBOM is included in GitHub Attestations
+gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 \
+  --owner broadsage \
+  --format json | jq '.verificationResult.statement.predicate'
+```
+
+#### View SBOM for DockerHub Images
+
+```bash
+# DockerHub: SBOM attached as Cosign attestation
 cosign verify-attestation \
-  --type spdx \
+  --type spdxjson \
   --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/broadsage/alpine:3.22 | jq -r '.payload' | base64 -d | jq
+  docker.io/broadsage/alpine:3.22 | jq -r '.payload' | base64 -d | jq
 ```
 
 ### 🏗️ Build Provenance (SLSA)
@@ -124,18 +146,22 @@ All images include SLSA build provenance attestations that provide verifiable in
 - Build environment
 - Build parameters
 
-**View provenance:**
+#### View Provenance for GHCR Images
 
 ```bash
-# View build provenance attestation
-cosign verify-attestation \
-  --type slsaprovenance \
+# GHCR: Built-in GitHub Attestations (recommended)
+gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 --owner broadsage
+```
+
+#### View Provenance for DockerHub Images
+
+```bash
+# DockerHub: Use Cosign to inspect build details
+cosign verify \
   --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/broadsage/alpine:3.22 | jq -r '.payload' | base64 -d | jq
-
-# Or using GitHub CLI
-gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 --owner broadsage
+  docker.io/broadsage/alpine:3.22 \
+  | jq '.[] | .optional.Bundle.Payload.body' | base64 -d | jq
 ```
 
 ### 🛡️ Vulnerability Scanning (Snyk)
@@ -159,11 +185,13 @@ Snyk scanning provides:
 
 ### ✅ Supply Chain Security
 
-- **Image Signing**: Cryptographically signed with Sigstore/Cosign
-- **SBOM Generation**: Complete software bill of materials
+- **Image Signing**:
+  - GHCR: GitHub native attestations (zero config, UI integration)
+  - DockerHub: Sigstore/Cosign signatures (industry standard)
+- **SBOM Generation**: Complete software bill of materials (SPDX format)
 - **Build Provenance**: SLSA attestations for build transparency
 - **Vulnerability Scanning**: Snyk enterprise scanning with SARIF reporting
-- **Pinned Dependencies**: All GitHub Actions are pinned to specific SHA256 hashes
+- **Pinned Dependencies**: All GitHub Actions pinned to specific SHA256 hashes
 - **Hardened Runners**: Network egress auditing with Step Security
 - **Automated Updates**: Dependabot keeps dependencies current
 - **Security Scanning**: OpenSSF Scorecard and dependency review
