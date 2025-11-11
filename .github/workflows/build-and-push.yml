@@ -21,6 +21,12 @@ on:
         required: false
         default: 'all'
 
+# Prevent race conditions: cancel old runs when new commits are pushed
+# This ensures tags always reflect the latest commit, not the last-completed build
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Registry configurations
   GHCR_REGISTRY: ghcr.io
