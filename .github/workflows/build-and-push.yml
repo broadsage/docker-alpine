@@ -190,8 +190,14 @@ jobs:
             org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md
             alpine.architecture=${{ matrix.architecture }}
             alpine.version=${{ steps.meta.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.version }}-${{ matrix.architecture }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.version }}-${{ matrix.architecture }}
+          cache-from: |
+            type=gha,scope=${{ matrix.version }}-${{ matrix.architecture }}
+            type=gha,scope=${{ matrix.version }}-x86_64
+            type=gha,scope=${{ matrix.version }}-aarch64
+            type=gha,scope=${{ matrix.version }}-common
+          cache-to: |
+            type=gha,mode=max,scope=${{ matrix.version }}-${{ matrix.architecture }}
+            type=gha,mode=max,scope=${{ matrix.version }}-common
 
       - name: Push to DockerHub
         if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
