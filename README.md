@@ -139,30 +139,132 @@ cosign verify-attestation \
 
 ### 🏗️ Build Provenance (SLSA)
 
-All images include SLSA build provenance attestations that provide verifiable information about how the image was built, including:
+All images include SLSA v1.0 build provenance attestations that provide verifiable information about how the image was built, including:
 
 - Build process details
 - Source repository and commit
 - Build environment
 - Build parameters
 
-#### View Provenance for GHCR Images
+#### Verify Build Provenance for GHCR Images
 
 ```bash
 # GHCR: Built-in GitHub Attestations (recommended)
 gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 --owner broadsage
+
+# View detailed provenance in JSON format
+gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 \
+  --owner broadsage \
+  --format json | jq '.verificationResult.statement.predicate'
 ```
 
-#### View Provenance for DockerHub Images
+#### Verify Build Provenance for DockerHub Images
 
 ```bash
-# DockerHub: Use Cosign to inspect build details
-cosign verify \
+# Verify provenance attestation signature
+cosign verify-attestation \
+  --type https://slsa.dev/provenance/v1 \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  docker.io/broadsage/alpine:3.22
+
+# Extract and view provenance details
+cosign verify-attestation \
+  --type https://slsa.dev/provenance/v1 \
   --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
   docker.io/broadsage/alpine:3.22 \
-  | jq '.[] | .optional.Bundle.Payload.body' | base64 -d | jq
+  | jq -r '.payload' | base64 -d | jq '.predicate'
+
+# View specific provenance fields
+# Builder information
+cosign verify-attestation \
+  --type https://slsa.dev/provenance/v1 \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  docker.io/broadsage/alpine:3.22 \
+  | jq -r '.payload' | base64 -d | jq '.predicate.runDetails.builder'
+
+# Source repository and commit
+cosign verify-attestation \
+  --type https://slsa.dev/provenance/v1 \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  docker.io/broadsage/alpine:3.22 \
+  | jq -r '.payload' | base64 -d | jq '.predicate.buildDefinition.resolvedDependencies'
+
+# Complete build workflow information
+cosign verify-attestation \
+  --type https://slsa.dev/provenance/v1 \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  docker.io/broadsage/alpine:3.22 \
+  | jq -r '.payload' | base64 -d | jq '.predicate.buildDefinition.externalParameters'
 ```
+
+#### Verify All Attestations at Once
+
+```bash
+# GHCR: Verify all attestations (SBOM + Provenance)
+gh attestation verify oci://ghcr.io/broadsage/alpine:3.22 \
+  --owner broadsage
+
+# DockerHub: List all attestations
+cosign tree docker.io/broadsage/alpine:3.22
+
+# DockerHub: Verify image signature
+cosign verify \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  docker.io/broadsage/alpine:3.22
+
+# DockerHub: Verify SBOM attestation
+cosign verify-attestation \
+  --type spdxjson \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  docker.io/broadsage/alpine:3.22
+
+# DockerHub: Verify provenance attestation
+cosign verify-attestation \
+  --type https://slsa.dev/provenance/v1 \
+  --certificate-identity-regexp="https://github.com/broadsage/docker-alpine" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  docker.io/broadsage/alpine:3.22
+```
+
+#### Verification Troubleshooting
+
+If verification fails, ensure:
+
+1. **Cosign is up to date** (v2.0+):
+
+   ```bash
+   cosign version
+   # Should be v2.0.0 or later
+   ```
+
+2. **Image tag exists**:
+
+   ```bash
+   docker pull docker.io/broadsage/alpine:3.22
+   ```
+
+3. **Using full image reference**:
+
+   ```bash
+   # ✅ Correct
+   docker.io/broadsage/alpine:3.22
+   
+   # ❌ Incorrect (missing registry)
+   broadsage/alpine:3.22
+   ```
+
+4. **Network connectivity** to Rekor transparency log:
+
+   ```bash
+   curl -s https://rekor.sigstore.dev/api/v1/log | jq
+   ```
 
 ### 🛡️ Vulnerability Scanning (Snyk)
 
