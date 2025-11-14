@@ -399,11 +399,11 @@ jobs:
       - name: Generate build provenance (single source of truth)
         id: generate-provenance
         run: |
-          # Create SLSA v1.1 provenance attestation - used for both registries
+          # Create SLSA v1.0 provenance (custom predicate type allows any valid JSON)
           cat > provenance-${{ matrix.version }}.json << EOF
           {
             "buildDefinition": {
-              "buildType": "https://slsa.dev/container-based-build/v0.1?draft",
+              "buildType": "https://github.com/Attestations/GitHubActionsWorkflow@v1",
               "externalParameters": {
                 "workflow": {
                   "repository": "https://github.com/${{ github.repository }}",
@@ -418,12 +418,12 @@ jobs:
                 "github": {
                   "event_name": "${{ github.event_name }}",
                   "repository_id": "${{ github.repository_id }}",
-                  "repository_owner_id": "${{ github.repository_owner_id }}"
+                  "actor_id": "${{ github.actor_id }}"
                 }
               },
               "resolvedDependencies": [
                 {
-                  "uri": "https://github.com/${{ github.repository }}",
+                  "uri": "git+https://github.com/${{ github.repository }}@${{ github.ref }}",
                   "digest": {
                     "gitCommit": "${{ github.sha }}"
                   }
@@ -441,7 +441,7 @@ jobs:
             }
           }
           EOF
-          echo "✅ SLSA v1.1 provenance file generated for both registries"
+          echo "✅ SLSA v1.0 provenance generated for both registries"
 
       - name: Attest SBOM for GHCR (GitHub native attestations)
         id: attest-sbom-ghcr
@@ -492,7 +492,8 @@ jobs:
       - name: Attest build provenance for DockerHub with Cosign
         run: |
           # Attach build provenance attestation - reuses provenance generated earlier
-          cosign attest --yes --type slsaprovenance \
+          # Use custom predicate type for SLSA v1.0+ compatibility
+          cosign attest --yes --type https://slsa.dev/provenance/v1 \
             --predicate provenance-${{ matrix.version }}.json \
             ${{ steps.manifest-dockerhub.outputs.manifest_tag }}@${{ steps.manifest-dockerhub.outputs.manifest_digest }}
           echo "✅ Build provenance attestation attached to DockerHub image"
