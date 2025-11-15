@@ -533,6 +533,190 @@ jobs:
           sarif_file: snyk-${{ matrix.version }}.sarif
           category: snyk-container-${{ matrix.version }}
 
+  export-build-metadata:
+    needs: [detect-versions, create-manifest]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcf5dd907a8 # v5.0.0
+
+      - name: Generate build metadata report
+        run: |
+          mkdir -p build-metadata
+          
+          # Create comprehensive build metadata JSON
+          cat > build-metadata/build-report.json <<EOF
+          {
+            "build": {
+              "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+              "trigger": "${{ github.event_name }}",
+              "workflow": "${{ github.workflow }}",
+              "run_id": "${{ github.run_id }}",
+              "run_number": "${{ github.run_number }}",
+              "run_attempt": "${{ github.run_attempt }}",
+              "actor": "${{ github.actor }}",
+              "sha": "${{ github.sha }}",
+              "ref": "${{ github.ref }}",
+              "repository": "${{ github.repository }}"
+            },
+            "versions": $(echo '${{ needs.detect-versions.outputs.versions }}' | jq -c),
+            "image_name": "${{ needs.detect-versions.outputs.image_name }}",
+            "architectures": [
+              "amd64",
+              "arm64",
+              "armv7",
+              "armv6",
+              "386",
+              "ppc64le",
+              "s390x",
+              "riscv64"
+            ],
+            "registries": {
+              "ghcr": "ghcr.io/${{ needs.detect-versions.outputs.image_name }}",
+              "dockerhub": "docker.io/${{ needs.detect-versions.outputs.image_name }}"
+            },
+            "security": {
+              "signed": true,
+              "sbom_format": "spdx-json",
+              "provenance_format": "slsa-v1.0",
+              "vulnerability_scanning": "snyk"
+            },
+            "links": {
+              "workflow_run": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "source_commit": "https://github.com/${{ github.repository }}/commit/${{ github.sha }}",
+              "ghcr_packages": "https://github.com/orgs/${{ github.repository_owner }}/packages/container/package/alpine",
+              "dockerhub": "https://hub.docker.com/r/${{ needs.detect-versions.outputs.image_name }}"
+            }
+          }
+          EOF
+          
+          # Create human-readable markdown report
+          cat > build-metadata/BUILD_REPORT.md <<EOF
+          # Alpine Linux Docker Image - Build Report
+          
+          **Build Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Build Trigger:** ${{ github.event_name }}
+          **Workflow Run:** [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          **Source Commit:** [\`${GITHUB_SHA:0:7}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+          
+          ## Built Versions
+          
+          $(echo '${{ needs.detect-versions.outputs.versions }}' | jq -r '.[] | "- Alpine \(.)"')
+          
+          ## Image Locations
+          
+          ### GitHub Container Registry (GHCR)
+          \`\`\`
+          ghcr.io/${{ needs.detect-versions.outputs.image_name }}:latest
+          ghcr.io/${{ needs.detect-versions.outputs.image_name }}:<version>
+          \`\`\`
+          
+          ### Docker Hub
+          \`\`\`
+          docker.io/${{ needs.detect-versions.outputs.image_name }}:latest
+          docker.io/${{ needs.detect-versions.outputs.image_name }}:<version>
+          \`\`\`
+          
+          ## Supported Architectures
+          
+          - linux/amd64 (x86_64)
+          - linux/arm64 (aarch64)
+          - linux/arm/v7 (armv7)
+          - linux/arm/v6 (armhf)
+          - linux/386 (x86)
+          - linux/ppc64le
+          - linux/s390x
+          - linux/riscv64
+          
+          ## Security Features
+          
+          - ✅ **Image Signing**: Cosign (Docker Hub) / GitHub Attestations (GHCR)
+          - ✅ **SBOM**: SPDX-JSON format
+          - ✅ **Provenance**: SLSA v1.0
+          - ✅ **Vulnerability Scanning**: Snyk Enterprise
+          
+          ## Verification
+          
+          ### Verify GHCR Image
+          \`\`\`bash
+          gh attestation verify oci://ghcr.io/${{ needs.detect-versions.outputs.image_name }}:latest --owner ${{ github.repository_owner }}
+          \`\`\`
+          
+          ### Verify Docker Hub Image
+          \`\`\`bash
+          cosign verify \\
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}" \\
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \\
+            docker.io/${{ needs.detect-versions.outputs.image_name }}:latest
+          \`\`\`
+          
+          ## Version Details
+          
+          $(for version in $(echo '${{ needs.detect-versions.outputs.versions }}' | jq -r '.[]'); do
+            if [ -f "${version}/VERSION" ]; then
+              echo "### Alpine ${version}"
+              echo "**Version:** \$(cat ${version}/VERSION)"
+              echo ""
+            fi
+          done)
+          
+          ---
+          
+          *Generated automatically by [GitHub Actions](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})*
+          EOF
+          
+          # Create version manifest
+          cat > build-metadata/versions.json <<EOF
+          {
+            "generated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "versions": {
+          $(for version in $(echo '${{ needs.detect-versions.outputs.versions }}' | jq -r '.[]'); do
+            if [ -f "${version}/VERSION" ]; then
+              alpine_version=$(cat ${version}/VERSION | tr -d '\n')
+              echo "      \"${version}\": \"${alpine_version}\","
+            fi
+          done | sed '$ s/,$//')
+            }
+          }
+          EOF
+          
+          echo "✅ Build metadata generated"
+          ls -lh build-metadata/
+
+      - name: Upload build metadata artifacts
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.5.0
+        with:
+          name: build-metadata-${{ github.run_number }}
+          path: build-metadata/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Display metadata summary
+        run: |
+          echo "## 📦 Build Metadata Exported" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Build #${{ github.run_number }}** completed successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- \`build-report.json\` - Comprehensive build metadata" >> $GITHUB_STEP_SUMMARY
+          echo "- \`BUILD_REPORT.md\` - Human-readable build report" >> $GITHUB_STEP_SUMMARY
+          echo "- \`versions.json\` - Alpine version manifest" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [Download Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [GHCR Packages](https://github.com/orgs/${{ github.repository_owner }}/packages/container/package/alpine)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Docker Hub](https://hub.docker.com/r/${{ needs.detect-versions.outputs.image_name }})" >> $GITHUB_STEP_SUMMARY
+
   cleanup-digest-refs:
     needs: [detect-versions, build-and-push, create-manifest]
     if: always() && github.event_name != 'pull_request'
