@@ -532,13 +532,15 @@ jobs:
       # Scan image once from GHCR (images are identical in both registries)
       # Upload single SARIF to avoid duplicate alerts in GitHub Security tab
       # This saves time, Snyk credits, and provides cleaner security reporting
+      # BLOCKING: Fails the build if HIGH or CRITICAL vulnerabilities are found
 
-      - name: Run Snyk Container Scan
+      - name: Run Snyk Container Scan (Blocking)
+        id: snyk-scan
         uses: snyk/actions/docker@9adf32b1121593767fc3c057af55b55db032dc04 # master
         continue-on-error: true
         with:
           image: ${{ steps.manifest-ghcr.outputs.manifest_tag }}@${{ steps.manifest-ghcr.outputs.manifest_digest }}
-          args: --severity-threshold=high --sarif-file-output=snyk-${{ matrix.version }}.sarif
+          args: --severity-threshold=high --sarif-file-output=snyk-${{ matrix.version }}.sarif --json-file-output=snyk-${{ matrix.version }}.json
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
@@ -548,6 +550,45 @@ jobs:
         with:
           sarif_file: snyk-${{ matrix.version }}.sarif
           category: snyk-container-${{ matrix.version }}
+
+      - name: Check vulnerability scan results
+        if: always()
+        run: |
+          # Parse Snyk results and fail if HIGH or CRITICAL vulnerabilities found
+          if [ -f "snyk-${{ matrix.version }}.json" ]; then
+            HIGH_COUNT=$(jq -r '.vulnerabilities | map(select(.severity == "high")) | length' snyk-${{ matrix.version }}.json 2>/dev/null || echo "0")
+            CRITICAL_COUNT=$(jq -r '.vulnerabilities | map(select(.severity == "critical")) | length' snyk-${{ matrix.version }}.json 2>/dev/null || echo "0")
+            
+            echo "🔍 Vulnerability Scan Results for Alpine ${{ matrix.version }}:"
+            echo "  - CRITICAL: ${CRITICAL_COUNT}"
+            echo "  - HIGH: ${HIGH_COUNT}"
+            
+            if [ "${CRITICAL_COUNT}" != "0" ] || [ "${HIGH_COUNT}" != "0" ]; then
+              echo "❌ BLOCKING: Found ${CRITICAL_COUNT} CRITICAL and ${HIGH_COUNT} HIGH severity vulnerabilities"
+              echo "::error::Build blocked due to HIGH/CRITICAL vulnerabilities. Please update base Alpine version or wait for upstream fixes."
+              
+              # Display vulnerability details
+              if [ "${CRITICAL_COUNT}" != "0" ]; then
+                echo "Critical Vulnerabilities:"
+                jq -r '.vulnerabilities | map(select(.severity == "critical")) | .[] | "  - \(.title) (\(.identifiers.CVE[0] // .id))"' snyk-${{ matrix.version }}.json 2>/dev/null || true
+              fi
+              if [ "${HIGH_COUNT}" != "0" ]; then
+                echo "High Severity Vulnerabilities:"
+                jq -r '.vulnerabilities | map(select(.severity == "high")) | .[] | "  - \(.title) (\(.identifiers.CVE[0] // .id))"' snyk-${{ matrix.version }}.json 2>/dev/null || true
+              fi
+              
+              exit 1
+            else
+              echo "✅ PASSED: No HIGH or CRITICAL vulnerabilities found"
+            fi
+          elif [ "${{ steps.snyk-scan.outcome }}" = "failure" ]; then
+            echo "❌ BLOCKING: Snyk scan failed to execute"
+            echo "::error::Vulnerability scan failed. Build cannot proceed without security validation."
+            exit 1
+          else
+            echo "⚠️  WARNING: Snyk results file not found, but scan did not fail"
+            echo "::warning::Unable to parse Snyk results. Proceeding with caution."
+          fi
 
   export-build-metadata:
     needs: [detect-versions, create-manifest]
