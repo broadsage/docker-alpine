@@ -193,8 +193,24 @@ jobs:
             org.opencontainers.image.base.name=scratch
             org.opencontainers.image.ref.name=${{ matrix.version }}
             org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md
-            alpine.architecture=${{ matrix.architecture }}
-            alpine.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.authors=Broadsage <opensource@broadsage.com>
+            io.github.alpine.architecture=${{ matrix.architecture }}
+            io.github.alpine.version=${{ steps.meta.outputs.version }}
+            io.github.alpine.branch=${{ matrix.version }}
+            io.github.alpine.platform=${{ steps.meta.outputs.platform }}
+            io.github.workflow.repository=${{ github.repository }}
+            io.github.workflow.name=${{ github.workflow }}
+            io.github.workflow.run-id=${{ github.run_id }}
+            io.github.workflow.run-number=${{ github.run_number }}
+            io.github.workflow.sha=${{ github.sha }}
+            io.github.workflow.ref=${{ github.ref_name }}
+            io.github.workflow.actor=${{ github.actor }}
+            io.github.workflow.event=${{ github.event_name }}
+            io.github.security.signed=true
+            io.github.security.sbom-format=spdx-json
+            io.github.security.provenance-format=slsa-v1.0
+            io.github.security.attestation-ghcr=github-attestations
+            io.github.security.attestation-dockerhub=cosign-keyless
           cache-from: |
             type=gha,scope=${{ matrix.version }}-${{ matrix.architecture }}
             type=gha,scope=${{ matrix.version }}-x86_64
