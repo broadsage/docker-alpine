@@ -77,11 +77,13 @@ Only 4 seconds to build and results in a 41 MB image!
 ### Basic Examples
 
 **Run a command:**
+
 ```bash
 docker run alpine:latest echo "Hello from Alpine!"
 ```
 
 **Interactive shell:**
+
 ```bash
 docker run -it alpine:latest /bin/sh
 ```
