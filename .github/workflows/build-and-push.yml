@@ -631,10 +631,12 @@ jobs:
       - name: Pull multi-arch image
         id: pull-image
         run: |
-          IMAGE="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${{ steps.version.outputs.version }}"
+          # Use the version tag (edge, 3.19, 3.20, etc.) instead of date-based version
+          IMAGE="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${{ matrix.version }}"
           echo "Pulling image: ${IMAGE}"
           docker pull ${IMAGE}
           echo "image=${IMAGE}" >> $GITHUB_OUTPUT
+          echo "Full Alpine version: ${{ steps.version.outputs.version }}"
 
       # Container Structure Tests - Google's OSS tool used by Docker Official Images
       - name: Install Container Structure Test
