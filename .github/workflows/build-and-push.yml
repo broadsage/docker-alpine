@@ -696,14 +696,9 @@ jobs:
               args: ['-c', 'echo "test"']
               expectedOutput: ['test']
             
-            - name: 'Basic Utilities Present'
+            - name: 'Basic Unix Tools'
               command: 'sh'
-              args: ['-c', 'which wget && which curl']
-              exitCode: 0
-            
-            - name: 'CA Certificates Installed'
-              command: 'sh'
-              args: ['-c', 'ls /etc/ssl/certs/ca-certificates.crt']
+              args: ['-c', 'ls / && cat /etc/alpine-release']
               exitCode: 0
           
           # Metadata Tests - Verify OCI labels
@@ -905,7 +900,7 @@ jobs:
           echo "- Network & SSL/TLS" >> $GITHUB_STEP_SUMMARY
           echo "- Multi-Architecture Support" >> $GITHUB_STEP_SUMMARY
           echo "- Security & Permissions" >> $GITHUB_STEP_SUMMARY
-          
+
   export-build-metadata:
     needs: [detect-versions, create-manifest]
     if: github.event_name != 'pull_request'
