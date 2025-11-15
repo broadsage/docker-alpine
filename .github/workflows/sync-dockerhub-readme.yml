@@ -25,16 +25,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      - name: Compute Docker Hub repository name
+        id: get-repo-name
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          # Strip 'docker-' prefix from repository name to get Docker Hub repo
+          DOCKERHUB_REPO="${REPO_OWNER}/${REPO_NAME#docker-}"
+          echo "dockerhub_repo=${DOCKERHUB_REPO}" >> $GITHUB_OUTPUT
+          echo "Docker Hub repository: ${DOCKERHUB_REPO}"
+
       - name: Sync README to Docker Hub
         uses: peter-evans/dockerhub-description@e98e4d1628a5f3be2be7c231e50981aee98723ae # v4.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ github.repository }}
+          repository: ${{ steps.get-repo-name.outputs.dockerhub_repo }}
           short-description: 'Alpine Linux - Minimal Docker image with complete package ecosystem (5MB)'
           readme-filepath: ./README.md
 
       - name: Verify sync completion
         run: |
           echo "✅ README.md synced to Docker Hub"
-          echo "View at: https://hub.docker.com/r/${{ github.repository }}"
+          echo "View at: https://hub.docker.com/r/${{ steps.get-repo-name.outputs.dockerhub_repo }}"
