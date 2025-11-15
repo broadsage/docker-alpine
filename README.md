@@ -89,6 +89,7 @@ docker run -it alpine:latest /bin/sh
 ```
 
 **Install packages:**
+
 ```bash
 docker run alpine:latest apk add --no-cache curl
 ```
@@ -438,7 +439,7 @@ Alpine uses **musl libc** instead of **glibc**:
 
 **Solution**: Use Alpine packages (already compiled for musl) or compile from source.
 
-### My pre-compiled binary doesn't work!
+### My pre-compiled binary doesn't work
 
 If you have a glibc-compiled binary:
 
