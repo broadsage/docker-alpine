@@ -882,7 +882,7 @@ jobs:
 
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.5.0
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v4.5.0
         with:
           name: test-report-${{ matrix.version }}
           path: test-report-${{ matrix.version }}.md
@@ -1064,7 +1064,7 @@ jobs:
           ls -lh build-metadata/
 
       - name: Upload build metadata artifacts
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.5.0
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v4.5.0
         with:
           name: build-metadata-${{ github.run_number }}
           path: build-metadata/
