@@ -82,7 +82,9 @@ jobs:
           - x86_64
     
     permissions:
+      contents: read
       packages: write
+      id-token: write
 
     steps:
       - name: Checkout repository
