@@ -123,30 +123,6 @@ jobs:
             echo "Dockerfile not found for ${{ matrix.version }}/${{ matrix.architecture }}, skipping"
           fi
 
-      - name: Set up QEMU
-        if: steps.check-dockerfile.outputs.exists == 'true'
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
-
-      - name: Set up Docker Buildx
-        if: steps.check-dockerfile.outputs.exists == 'true'
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
-
-      - name: Log in to GitHub Container Registry
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
-        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
-        with:
-          registry: ${{ env.GHCR_REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Log in to DockerHub
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
-        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
-        with:
-          registry: ${{ env.DOCKERHUB_REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Extract metadata
         if: steps.check-dockerfile.outputs.exists == 'true'
         id: meta
@@ -155,84 +131,71 @@ jobs:
           VERSION=$(cat ${{ matrix.version }}/VERSION | tr -d '\n')
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           
-          # Map architecture names to Docker platform names
-          case "${{ matrix.architecture }}" in
-            x86_64)   PLATFORM="linux/amd64" ;;
-            aarch64)  PLATFORM="linux/arm64" ;;
-            armhf)    PLATFORM="linux/arm/v6" ;;
-            armv7)    PLATFORM="linux/arm/v7" ;;
-            ppc64le)  PLATFORM="linux/ppc64le" ;;
-            riscv64)  PLATFORM="linux/riscv64" ;;
-            s390x)    PLATFORM="linux/s390x" ;;
-            x86)      PLATFORM="linux/386" ;;
-            *)        PLATFORM="linux/amd64" ;;
-          esac
-          echo "platform=${PLATFORM}" >> $GITHUB_OUTPUT
+          # Generate temporary tag for this architecture build
+          TEMP_TAG="${{ matrix.version }}-${{ matrix.architecture }}-${{ github.sha }}"
+          echo "temp_tag=${TEMP_TAG}" >> $GITHUB_OUTPUT
 
-      - name: Build and push to all registries
-        if: steps.check-dockerfile.outputs.exists == 'true'
-        id: build
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        with:
-          context: ${{ matrix.version }}/${{ matrix.architecture }}
-          platforms: ${{ steps.meta.outputs.platform }}
-          push: false
-          outputs: type=image,name=${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
-          provenance: true
-          sbom: true
-          labels: |
-            org.opencontainers.image.title=Alpine Linux
-            org.opencontainers.image.description=Alpine Linux minimal container image - ${{ matrix.architecture }} architecture
-            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
-            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
-            org.opencontainers.image.url=https://github.com/${{ github.repository }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.licenses=MIT
-            org.opencontainers.image.vendor=Broadsage Corporation Limited
-            org.opencontainers.image.base.name=scratch
-            org.opencontainers.image.ref.name=${{ matrix.version }}
-            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md
-            org.opencontainers.image.authors=Broadsage <opensource@broadsage.com>
-            io.github.alpine.architecture=${{ matrix.architecture }}
-            io.github.alpine.version=${{ steps.meta.outputs.version }}
-            io.github.alpine.branch=${{ matrix.version }}
-            io.github.alpine.platform=${{ steps.meta.outputs.platform }}
-            io.github.workflow.repository=${{ github.repository }}
-            io.github.workflow.name=${{ github.workflow }}
-            io.github.workflow.run-id=${{ github.run_id }}
-            io.github.workflow.run-number=${{ github.run_number }}
-            io.github.workflow.sha=${{ github.sha }}
-            io.github.workflow.ref=${{ github.ref_name }}
-            io.github.workflow.actor=${{ github.actor }}
-            io.github.workflow.event=${{ github.event_name }}
-            io.github.security.signed=true
-            io.github.security.sbom-format=spdx-json
-            io.github.security.provenance-format=slsa-v1.0
-            io.github.security.attestation-ghcr=github-attestations
-            io.github.security.attestation-dockerhub=cosign-keyless
-          cache-from: |
-            type=gha,scope=${{ matrix.version }}-${{ matrix.architecture }}
-            type=gha,scope=${{ matrix.version }}-x86_64
-            type=gha,scope=${{ matrix.version }}-aarch64
-            type=gha,scope=${{ matrix.version }}-armv7
-            type=gha,scope=${{ matrix.version }}-armhf
-            type=gha,scope=${{ matrix.version }}-x86
-            type=gha,scope=${{ matrix.version }}-ppc64le
-            type=gha,scope=${{ matrix.version }}-s390x
-            type=gha,scope=${{ matrix.version }}-riscv64
-          cache-to: type=gha,mode=max,scope=${{ matrix.version }}-${{ matrix.architecture }}
-
-      - name: Push to DockerHub
+      - name: Build and push to GHCR using Dagger
         if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        id: build-ghcr
+        uses: dagger/dagger-for-github@v6
+        with:
+          version: "latest"
+          verb: call
+          module: github.com/broadsage/dagger-modules/docker@main
+          args: |
+            push --context=${{ matrix.version }}/${{ matrix.architecture }} \
+              --image-name=${{ needs.detect-versions.outputs.image_name }} \
+              --username=${{ github.actor }} \
+              --password=env:GITHUB_TOKEN \
+              --registry=${{ env.GHCR_REGISTRY }} \
+              --tags=${{ steps.meta.outputs.temp_tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push to DockerHub using Dagger
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        id: build-dockerhub
+        uses: dagger/dagger-for-github@v6
+        with:
+          version: "latest"
+          verb: call
+          module: github.com/broadsage/dagger-modules/docker@main
+          args: |
+            push --context=${{ matrix.version }}/${{ matrix.architecture }} \
+              --image-name=${{ needs.detect-versions.outputs.image_name }} \
+              --username=${{ secrets.DOCKERHUB_USERNAME }} \
+              --password=env:DOCKERHUB_TOKEN \
+              --registry=${{ env.DOCKERHUB_REGISTRY }} \
+              --tags=${{ steps.meta.outputs.temp_tag }}
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx (for manifest inspection)
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Log in to GHCR (for manifest inspection)
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract digest from GHCR
+        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        id: extract-digest
         run: |
-          # Re-tag and push the same image to DockerHub
-          GHCR_IMAGE="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}@${{ steps.build.outputs.digest }}"
-          DOCKERHUB_IMAGE="${{ env.DOCKERHUB_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}@${{ steps.build.outputs.digest }}"
-          
-          echo "Copying image from GHCR to DockerHub..."
-          docker buildx imagetools create --tag "${DOCKERHUB_IMAGE}" "${GHCR_IMAGE}"
-          echo "✅ Pushed to DockerHub: ${DOCKERHUB_IMAGE}"
+          # Inspect the image we just pushed to get digest
+          IMAGE_REF="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${{ steps.meta.outputs.temp_tag }}"
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE_REF}" --format '{{.Manifest.Digest}}' 2>/dev/null || echo "")
+          if [ -z "${DIGEST}" ]; then
+            # Fallback method
+            DIGEST=$(docker buildx imagetools inspect "${IMAGE_REF}" --raw 2>/dev/null | sha256sum | awk '{print "sha256:"$1}')
+          fi
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+          echo "Extracted digest: ${DIGEST}"
 
       # Digest Export Strategy:
       # Export image digests once to /tmp/digests (digests are identical for both registries)
@@ -243,7 +206,7 @@ jobs:
         if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
         run: |
           mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
+          digest="${{ steps.extract-digest.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
           echo "Exported digest: $digest for ${{ matrix.architecture }}"
 
