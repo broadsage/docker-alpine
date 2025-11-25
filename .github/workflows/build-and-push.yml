@@ -110,7 +110,7 @@ jobs:
             push
             --context=./${{ matrix.version }}/${{ matrix.architecture }}
             --image-name=${{ needs.detect-versions.outputs.image_name }}
-            --username=${{ github.actor }}
+            --username=${{ github.repository_owner }}
             --password=env:GITHUB_TOKEN
             --registry=${{ env.GHCR_REGISTRY }}
             --tags=${{ matrix.version }}-${{ matrix.architecture }}
