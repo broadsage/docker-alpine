@@ -112,7 +112,7 @@ jobs:
             --context=./${{ matrix.version }}/${{ matrix.architecture }}
             --image-name=${{ needs.detect-versions.outputs.image_name }}
             --username=${{ github.actor }}
-            --password=${{ secrets.GITHUB_TOKEN }}
+            --password=env:GITHUB_TOKEN
             --registry=${{ env.GHCR_REGISTRY }}
             --tags=${{ matrix.version }}-${{ matrix.architecture }}
         env:
@@ -130,7 +130,7 @@ jobs:
             --context=./${{ matrix.version }}/${{ matrix.architecture }}
             --image-name=${{ needs.detect-versions.outputs.image_name }}
             --username=${{ secrets.DOCKERHUB_USERNAME }}
-            --password=${{ secrets.DOCKERHUB_TOKEN }}
+            --password=env:DOCKERHUB_TOKEN
             --registry=${{ env.DOCKERHUB_REGISTRY }}
             --tags=${{ matrix.version }}-${{ matrix.architecture }}
         env:
