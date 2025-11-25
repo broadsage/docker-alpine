@@ -143,13 +143,7 @@ jobs:
           version: "latest"
           verb: call
           module: github.com/broadsage/dagger-modules/docker@main
-          args: |
-            push --context=${{ matrix.version }}/${{ matrix.architecture }} \
-              --image-name=${{ needs.detect-versions.outputs.image_name }} \
-              --username=${{ github.actor }} \
-              --password=env:GITHUB_TOKEN \
-              --registry=${{ env.GHCR_REGISTRY }} \
-              --tags=${{ steps.meta.outputs.temp_tag }}
+          args: push --context=./${{ matrix.version }}/${{ matrix.architecture }} --image-name=${{ needs.detect-versions.outputs.image_name }} --username=${{ github.actor }} --password=env:GITHUB_TOKEN --registry=${{ env.GHCR_REGISTRY }} --tags=${{ steps.meta.outputs.temp_tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -161,13 +155,7 @@ jobs:
           version: "latest"
           verb: call
           module: github.com/broadsage/dagger-modules/docker@main
-          args: |
-            push --context=${{ matrix.version }}/${{ matrix.architecture }} \
-              --image-name=${{ needs.detect-versions.outputs.image_name }} \
-              --username=${{ secrets.DOCKERHUB_USERNAME }} \
-              --password=env:DOCKERHUB_TOKEN \
-              --registry=${{ env.DOCKERHUB_REGISTRY }} \
-              --tags=${{ steps.meta.outputs.temp_tag }}
+          args: push --context=./${{ matrix.version }}/${{ matrix.architecture }} --image-name=${{ needs.detect-versions.outputs.image_name }} --username=${{ secrets.DOCKERHUB_USERNAME }} --password=env:DOCKERHUB_TOKEN --registry=${{ env.DOCKERHUB_REGISTRY }} --tags=${{ steps.meta.outputs.temp_tag }}
         env:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
