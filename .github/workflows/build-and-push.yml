@@ -112,11 +112,11 @@ jobs:
             --context=./${{ matrix.version }}/${{ matrix.architecture }}
             --image-name=${{ needs.detect-versions.outputs.image_name }}
             --username=${{ github.actor }}
-            --password=env:GITHUB_TOKEN
+            --password=env:GH_TOKEN
             --registry=${{ env.GHCR_REGISTRY }}
             --tags=${{ matrix.version }}-${{ matrix.architecture }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push to DockerHub using Dagger
         if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
