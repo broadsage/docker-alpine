@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       versions: ${{ steps.get-versions.outputs.versions }}
-      image_name: ${{ steps.compute.outputs.result }}
+      image_name: ${{ steps.set-output.outputs.image_name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
@@ -56,6 +56,10 @@ jobs:
             compute-image-name
             --repo-owner=${{ github.repository_owner }}
             --repo-name=${{ github.event.repository.name }}
+
+      - name: Set output
+        id: set-output
+        run: echo "image_name=${{ steps.compute.outputs.result }}" >> $GITHUB_OUTPUT
 
       - name: Detect Alpine versions
         id: get-versions
