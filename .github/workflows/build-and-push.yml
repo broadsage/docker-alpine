@@ -40,13 +40,16 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       versions: ${{ steps.get-versions.outputs.versions }}
-      image_name: ${{ steps.get-image-name.outputs.image_name }}
+      image_name: ${{ steps.set-image-name.outputs.image_name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
+      - name: Setup Dagger
+        uses: dagger/dagger-for-github@v6
+
       - name: Compute image name
-        id: get-image-name
+        id: set-image-name
         run: |
           IMAGE_NAME=$(dagger call -m github.com/broadsage/dagger-modules/modules/github@main \
             compute-image-name \
@@ -68,6 +71,8 @@ jobs:
     needs: detect-versions
     runs-on: ubuntu-latest
     if: needs.detect-versions.outputs.versions != '[]'
+    env:
+      IMAGE_NAME: ${{ needs.detect-versions.outputs.image_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -111,7 +116,7 @@ jobs:
           args: >-
             build-and-push
             --context=./${{ matrix.version }}/${{ matrix.architecture }}
-            --image-name=${{ needs.detect-versions.outputs.image_name }}
+            --image-name=${{ env.IMAGE_NAME }}
             --username=${{ github.actor }}
             --password=env:GITHUB_TOKEN
             --registry=${{ env.GHCR_REGISTRY }}
@@ -130,7 +135,7 @@ jobs:
           args: >-
             build-and-push
             --context=./${{ matrix.version }}/${{ matrix.architecture }}
-            --image-name=${{ needs.detect-versions.outputs.image_name }}
+            --image-name=${{ env.IMAGE_NAME }}
             --username=${{ secrets.DOCKERHUB_USERNAME }}
             --password=env:DOCKERHUB_TOKEN
             --registry=${{ env.DOCKERHUB_REGISTRY }}
