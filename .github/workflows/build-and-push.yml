@@ -52,10 +52,10 @@ jobs:
           version: "latest"
           verb: call
           module: github.com/broadsage/dagger-modules/modules/github@main
-          args: |
-            compute-image-name \
-              --repo-owner=${{ github.repository_owner }} \
-              --repo-name=${{ github.event.repository.name }}
+          args: >-
+            compute-image-name
+            --repo-owner=${{ github.repository_owner }}
+            --repo-name=${{ github.event.repository.name }}
 
       - name: Detect Alpine versions
         id: get-versions
