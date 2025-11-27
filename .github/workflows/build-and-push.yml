@@ -87,15 +87,6 @@ jobs:
       fail-fast: false
       matrix:
         version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
-        architecture:
-          - aarch64
-          - armhf
-          - armv7
-          - ppc64le
-          - riscv64
-          - s390x
-          - x86
-          - x86_64
     
     permissions:
       contents: write
@@ -112,27 +103,95 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Check if Dockerfile exists
-        id: check-dockerfile
+      - name: Detect available platforms
+        id: platforms
         run: |
-          if [ -f "${{ matrix.version }}/${{ matrix.architecture }}/Dockerfile" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Dockerfile exists for ${{ matrix.version }}/${{ matrix.architecture }}"
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Dockerfile not found for ${{ matrix.version }}/${{ matrix.architecture }}, skipping"
+          VERSION="${{ matrix.version }}"
+          
+          # Map architecture directory names to Docker platform names
+          declare -A PLATFORM_MAP=(
+            ["x86_64"]="linux/amd64"
+            ["aarch64"]="linux/arm64"
+            ["armhf"]="linux/arm/v6"
+            ["armv7"]="linux/arm/v7"
+            ["ppc64le"]="linux/ppc64le"
+            ["riscv64"]="linux/riscv64"
+            ["s390x"]="linux/s390x"
+            ["x86"]="linux/386"
+          )
+          
+          # Detect which architectures have Dockerfiles
+          PLATFORMS=""
+          for arch_dir in "${VERSION}"/*; do
+            if [ -d "${arch_dir}" ] && [ -f "${arch_dir}/Dockerfile" ]; then
+              arch=$(basename "${arch_dir}")
+              if [ -n "${PLATFORM_MAP[$arch]}" ]; then
+                PLATFORMS="${PLATFORMS}${PLATFORM_MAP[$arch]},"
+              fi
+            fi
+          done
+          
+          # Remove trailing comma
+          PLATFORMS="${PLATFORMS%,}"
+          
+          if [ -z "${PLATFORMS}" ]; then
+            echo "No Dockerfiles found for version ${VERSION}"
+            echo "platforms=" >> $GITHUB_OUTPUT
+            exit 0
           fi
+          
+          echo "platforms=${PLATFORMS}" >> $GITHUB_OUTPUT
+          echo "Detected platforms for ${VERSION}: ${PLATFORMS}"
+
+      - name: Read VERSION file
+        if: steps.platforms.outputs.platforms != ''
+        id: version
+        run: |
+          VERSION=$(cat ${{ matrix.version }}/VERSION | tr -d '\n')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Alpine version: ${VERSION}"
+
+      - name: Generate tag list
+        if: steps.platforms.outputs.platforms != ''
+        id: tags
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          
+          # Build tag lists for both registries
+          GHCR_TAGS=""
+          DOCKERHUB_TAGS=""
+          
+          if [ "${{ matrix.version }}" = "edge" ]; then
+            GHCR_TAGS="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:edge"
+            DOCKERHUB_TAGS="${{ env.DOCKERHUB_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:edge"
+          else
+            MAJOR_MINOR=$(echo ${{ matrix.version }} | cut -d. -f1-2)
+            GHCR_TAGS="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${VERSION},${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${MAJOR_MINOR}"
+            DOCKERHUB_TAGS="${{ env.DOCKERHUB_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${VERSION},${{ env.DOCKERHUB_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${MAJOR_MINOR}"
+            
+            # Check if this is the newest non-edge version for 'latest' tag
+            NEWEST=$(find . -maxdepth 1 -type d -name "3.*" -exec basename {} \; | sort -V | tail -1)
+            if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
+              GHCR_TAGS="${GHCR_TAGS},${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:latest"
+              DOCKERHUB_TAGS="${DOCKERHUB_TAGS},${{ env.DOCKERHUB_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:latest"
+            fi
+          fi
+          
+          echo "ghcr_tags=${GHCR_TAGS}" >> $GITHUB_OUTPUT
+          echo "dockerhub_tags=${DOCKERHUB_TAGS}" >> $GITHUB_OUTPUT
+          echo "GHCR tags: ${GHCR_TAGS}"
+          echo "DockerHub tags: ${DOCKERHUB_TAGS}"
 
       - name: Set up QEMU
-        if: steps.check-dockerfile.outputs.exists == 'true'
+        if: steps.platforms.outputs.platforms != ''
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: Set up Docker Buildx
-        if: steps.check-dockerfile.outputs.exists == 'true'
+        if: steps.platforms.outputs.platforms != ''
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - name: Log in to GitHub Container Registry
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        if: steps.platforms.outputs.platforms != '' && github.event_name != 'pull_request'
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ${{ env.GHCR_REGISTRY }}
@@ -140,50 +199,69 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to DockerHub
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
+        if: steps.platforms.outputs.platforms != '' && github.event_name != 'pull_request'
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ${{ env.DOCKERHUB_REGISTRY }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
-        if: steps.check-dockerfile.outputs.exists == 'true'
-        id: meta
+      - name: Create multi-platform Dockerfile
+        if: steps.platforms.outputs.platforms != ''
         run: |
-          # Read VERSION file
-          VERSION=$(cat ${{ matrix.version }}/VERSION | tr -d '\n')
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          # Create a wrapper Dockerfile that uses TARGETPLATFORM to select the right context
+          cat > ${{ matrix.version }}/Dockerfile <<'EOF'
+          # syntax=docker/dockerfile:1
+          ARG TARGETPLATFORM
           
-          # Map architecture names to Docker platform names
-          case "${{ matrix.architecture }}" in
-            x86_64)   PLATFORM="linux/amd64" ;;
-            aarch64)  PLATFORM="linux/arm64" ;;
-            armhf)    PLATFORM="linux/arm/v6" ;;
-            armv7)    PLATFORM="linux/arm/v7" ;;
-            ppc64le)  PLATFORM="linux/ppc64le" ;;
-            riscv64)  PLATFORM="linux/riscv64" ;;
-            s390x)    PLATFORM="linux/s390x" ;;
-            x86)      PLATFORM="linux/386" ;;
-            *)        PLATFORM="linux/amd64" ;;
-          esac
-          echo "platform=${PLATFORM}" >> $GITHUB_OUTPUT
+          # Map platform to architecture directory
+          FROM --platform=${TARGETPLATFORM} scratch AS base
+          
+          # Copy from the appropriate architecture directory based on TARGETPLATFORM
+          # This is a clever trick: we copy from all possible arch dirs, but only the one
+          # matching TARGETPLATFORM will have content due to platform-specific builds
+          EOF
+          
+          # Determine which architecture directories exist and add them to the Dockerfile
+          for platform in $(echo "${{ steps.platforms.outputs.platforms }}" | tr ',' '\n'); do
+            case "$platform" in
+              "linux/amd64")    arch="x86_64" ;;
+              "linux/arm64")    arch="aarch64" ;;
+              "linux/arm/v6")   arch="armhf" ;;
+              "linux/arm/v7")   arch="armv7" ;;
+              "linux/ppc64le")  arch="ppc64le" ;;
+              "linux/riscv64")  arch="riscv64" ;;
+              "linux/s390x")    arch="s390x" ;;
+              "linux/386")      arch="x86" ;;
+            esac
+            
+            # Read the original Dockerfile and append its content
+            if [ -f "${{ matrix.version }}/${arch}/Dockerfile" ]; then
+              echo "" >> ${{ matrix.version }}/Dockerfile
+              echo "# Platform: ${platform} (${arch})" >> ${{ matrix.version }}/Dockerfile
+              cat "${{ matrix.version }}/${arch}/Dockerfile" >> ${{ matrix.version }}/Dockerfile
+              break  # All arch Dockerfiles should be identical, just use the first one
+            fi
+          done
+          
+          echo "Generated multi-platform Dockerfile for ${{ matrix.version }}"
 
-      - name: Build and push to all registries
-        if: steps.check-dockerfile.outputs.exists == 'true'
-        id: build
+      - name: Build and push multi-platform image to GHCR
+        if: steps.platforms.outputs.platforms != ''
+        id: build-ghcr
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
-          context: ${{ matrix.version }}/${{ matrix.architecture }}
-          platforms: ${{ steps.meta.outputs.platform }}
-          push: false
-          outputs: type=image,name=${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          context: ${{ matrix.version }}
+          file: ${{ matrix.version }}/Dockerfile
+          platforms: ${{ steps.platforms.outputs.platforms }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.ghcr_tags }}
           provenance: true
           sbom: true
           labels: |
             org.opencontainers.image.title=Alpine Linux
-            org.opencontainers.image.description=Alpine Linux minimal container image - ${{ matrix.architecture }} architecture
-            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.description=Alpine Linux minimal container image - Multi-platform
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -194,10 +272,8 @@ jobs:
             org.opencontainers.image.ref.name=${{ matrix.version }}
             org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md
             org.opencontainers.image.authors=Broadsage <opensource@broadsage.com>
-            io.github.alpine.architecture=${{ matrix.architecture }}
-            io.github.alpine.version=${{ steps.meta.outputs.version }}
+            io.github.alpine.version=${{ steps.version.outputs.version }}
             io.github.alpine.branch=${{ matrix.version }}
-            io.github.alpine.platform=${{ steps.meta.outputs.platform }}
             io.github.workflow.repository=${{ github.repository }}
             io.github.workflow.name=${{ github.workflow }}
             io.github.workflow.run-id=${{ github.run_id }}
@@ -211,52 +287,54 @@ jobs:
             io.github.security.provenance-format=slsa-v1.0
             io.github.security.attestation-ghcr=github-attestations
             io.github.security.attestation-dockerhub=cosign-keyless
-          cache-from: |
-            type=gha,scope=${{ matrix.version }}-${{ matrix.architecture }}
-            type=gha,scope=${{ matrix.version }}-x86_64
-            type=gha,scope=${{ matrix.version }}-aarch64
-            type=gha,scope=${{ matrix.version }}-armv7
-            type=gha,scope=${{ matrix.version }}-armhf
-            type=gha,scope=${{ matrix.version }}-x86
-            type=gha,scope=${{ matrix.version }}-ppc64le
-            type=gha,scope=${{ matrix.version }}-s390x
-            type=gha,scope=${{ matrix.version }}-riscv64
-          cache-to: type=gha,mode=max,scope=${{ matrix.version }}-${{ matrix.architecture }}
+          cache-from: type=gha,scope=${{ matrix.version }}-buildx
+          cache-to: type=gha,mode=max,scope=${{ matrix.version }}-buildx
 
-      - name: Push to DockerHub
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
-        run: |
-          # Re-tag and push the same image to DockerHub
-          GHCR_IMAGE="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}@${{ steps.build.outputs.digest }}"
-          DOCKERHUB_IMAGE="${{ env.DOCKERHUB_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}@${{ steps.build.outputs.digest }}"
-          
-          echo "Copying image from GHCR to DockerHub..."
-          docker buildx imagetools create --tag "${DOCKERHUB_IMAGE}" "${GHCR_IMAGE}"
-          echo "✅ Pushed to DockerHub: ${DOCKERHUB_IMAGE}"
-
-      # Digest Export Strategy:
-      # Export image digests once to /tmp/digests (digests are identical for both registries)
-      # Upload as single artifact set to reduce duplication (40 artifacts instead of 80)
-      # Both manifest creation steps will read from the same digest directory
-
-      - name: Export digest
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-          echo "Exported digest: $digest for ${{ matrix.architecture }}"
-
-      - name: Upload digest
-        if: steps.check-dockerfile.outputs.exists == 'true' && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v4.6.0
+      - name: Build and push multi-platform image to DockerHub
+        if: steps.platforms.outputs.platforms != '' && github.event_name != 'pull_request'
+        id: build-dockerhub
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
-          name: digests-${{ matrix.version }}-${{ matrix.architecture }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
+          context: ${{ matrix.version }}
+          file: ${{ matrix.version }}/Dockerfile
+          platforms: ${{ steps.platforms.outputs.platforms }}
+          push: true
+          tags: ${{ steps.tags.outputs.dockerhub_tags }}
+          provenance: true
+          sbom: true
+          labels: |
+            org.opencontainers.image.title=Alpine Linux
+            org.opencontainers.image.description=Alpine Linux minimal container image - Multi-platform
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.vendor=Broadsage Corporation Limited
+            org.opencontainers.image.base.name=scratch
+            org.opencontainers.image.ref.name=${{ matrix.version }}
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md
+            org.opencontainers.image.authors=Broadsage <opensource@broadsage.com>
+            io.github.alpine.version=${{ steps.version.outputs.version }}
+            io.github.alpine.branch=${{ matrix.version }}
+            io.github.workflow.repository=${{ github.repository }}
+            io.github.workflow.name=${{ github.workflow }}
+            io.github.workflow.run-id=${{ github.run_id }}
+            io.github.workflow.run-number=${{ github.run_number }}
+            io.github.workflow.sha=${{ github.sha }}
+            io.github.workflow.ref=${{ github.ref_name }}
+            io.github.workflow.actor=${{ github.actor }}
+            io.github.workflow.event=${{ github.event_name }}
+            io.github.security.signed=true
+            io.github.security.sbom-format=spdx-json
+            io.github.security.provenance-format=slsa-v1.0
+            io.github.security.attestation-ghcr=github-attestations
+            io.github.security.attestation-dockerhub=cosign-keyless
+          cache-from: type=gha,scope=${{ matrix.version }}-buildx
+          cache-to: type=gha,mode=max,scope=${{ matrix.version }}-buildx
 
-  create-manifest:
+  attest-and-scan:
     needs: [detect-versions, build-and-push]
     if: github.event_name != 'pull_request' && needs.detect-versions.outputs.versions != '[]'
     runs-on: ubuntu-latest
@@ -281,13 +359,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Download digests
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          path: /tmp/digests
-          pattern: digests-${{ matrix.version }}-*
-          merge-multiple: true
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
@@ -311,99 +382,28 @@ jobs:
           VERSION=$(cat ${{ matrix.version }}/VERSION | tr -d '\n')
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
-      # Tag Generation Strategy:
-      # Generate registry-agnostic tag suffixes once (edge, VERSION, MAJOR.MINOR, latest)
-      # Both GHCR and DockerHub manifest steps apply their registry prefix to these suffixes
-      # This eliminates ~30 lines of duplicated tag logic and ensures consistency
-      - name: Generate tag list
-        id: generate-tags
+      - name: Get manifest digests
+        id: digests
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          
-          # Determine tag suffixes (registry-agnostic)
-          if [ "${{ matrix.version }}" = "edge" ]; then
-            TAG_SUFFIXES="edge"
-          else
-            MAJOR_MINOR=$(echo ${{ matrix.version }} | cut -d. -f1-2)
-            TAG_SUFFIXES="${VERSION} ${MAJOR_MINOR}"
-            
-            # Check if this is the newest non-edge version for 'latest' tag
-            NEWEST=$(find . -maxdepth 1 -type d -name "3.*" -exec basename {} \; | sort -V | tail -1)
-            if [ "${{ matrix.version }}" = "${NEWEST}" ]; then
-              TAG_SUFFIXES="${TAG_SUFFIXES} latest"
-            fi
+          # Get GHCR manifest digest
+          GHCR_IMAGE="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${{ matrix.version }}"
+          GHCR_RAW=$(docker buildx imagetools inspect "${GHCR_IMAGE}" --raw 2>/dev/null || true)
+          if [ -n "${GHCR_RAW}" ]; then
+            GHCR_DIGEST=$(echo "${GHCR_RAW}" | jq -r '.config.digest // .manifests[0].digest // .Digest' | head -n1)
+            echo "ghcr_digest=${GHCR_DIGEST}" >> $GITHUB_OUTPUT
+            echo "ghcr_image=${GHCR_IMAGE}" >> $GITHUB_OUTPUT
+            echo "GHCR digest: ${GHCR_DIGEST}"
           fi
           
-          echo "tag_suffixes=${TAG_SUFFIXES}" >> $GITHUB_OUTPUT
-          echo "Generated tag suffixes: ${TAG_SUFFIXES}"
-
-      - name: Create and push GHCR manifest
-        id: manifest-ghcr
-        run: |
-          IMAGE_NAME="${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
-          
-          # Apply registry prefix to shared tag suffixes
-          TAGS=""
-          for SUFFIX in ${{ steps.generate-tags.outputs.tag_suffixes }}; do
-            TAGS="${TAGS} ${IMAGE_NAME}:${SUFFIX}"
-          done
-          TAGS=$(echo ${TAGS} | xargs)
-          
-          # Build manifest from digests
-          docker buildx imagetools create $(printf -- "-t %s " ${TAGS}) \
-            $(printf "$IMAGE_NAME@sha256:%s " $(ls /tmp/digests))
-          
-          # Get the manifest digest for attestation
-          MANIFEST_TAG=$(echo ${TAGS} | awk '{print $1}')
-          RAW=$(docker buildx imagetools inspect "${MANIFEST_TAG}" --raw 2>/dev/null || true)
-          if [ -z "${RAW}" ]; then
-            echo "Failed to inspect manifest ${MANIFEST_TAG}" >&2
-            exit 1
+          # Get DockerHub manifest digest
+          DOCKERHUB_IMAGE="${{ env.DOCKERHUB_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}:${{ matrix.version }}"
+          DOCKERHUB_RAW=$(docker buildx imagetools inspect "${DOCKERHUB_IMAGE}" --raw 2>/dev/null || true)
+          if [ -n "${DOCKERHUB_RAW}" ]; then
+            DOCKERHUB_DIGEST=$(echo "${DOCKERHUB_RAW}" | jq -r '.config.digest // .manifests[0].digest // .Digest' | head -n1)
+            echo "dockerhub_digest=${DOCKERHUB_DIGEST}" >> $GITHUB_OUTPUT
+            echo "dockerhub_image=${DOCKERHUB_IMAGE}" >> $GITHUB_OUTPUT
+            echo "DockerHub digest: ${DOCKERHUB_DIGEST}"
           fi
-          DIGEST=$(echo "${RAW}" | jq -r '.Descriptor.digest // .descriptor.digest // .manifests[0].digest // .Digest' | head -n1)
-          if [ -z "${DIGEST}" ] || [ "${DIGEST}" = "null" ]; then
-            echo "Unable to determine manifest digest for ${MANIFEST_TAG}" >&2
-            exit 1
-          fi
-          echo "manifest_digest=${DIGEST}" >> $GITHUB_OUTPUT
-          echo "manifest_tag=${MANIFEST_TAG}" >> $GITHUB_OUTPUT
-          echo "manifest_tags=${TAGS}" >> $GITHUB_OUTPUT
-          echo "✅ GHCR manifest created with tags: ${TAGS}"
-          echo "Manifest digest: ${DIGEST}"
-
-      - name: Create and push DockerHub manifest
-        id: manifest-dockerhub
-        run: |
-          IMAGE_NAME="${{ env.DOCKERHUB_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}"
-          
-          # Apply registry prefix to shared tag suffixes
-          TAGS=""
-          for SUFFIX in ${{ steps.generate-tags.outputs.tag_suffixes }}; do
-            TAGS="${TAGS} ${IMAGE_NAME}:${SUFFIX}"
-          done
-          TAGS=$(echo ${TAGS} | xargs)
-          
-          # Build manifest from digests
-          docker buildx imagetools create $(printf -- "-t %s " ${TAGS}) \
-            $(printf "$IMAGE_NAME@sha256:%s " $(ls /tmp/digests))
-          
-          # Get the manifest digest
-          MANIFEST_TAG=$(echo ${TAGS} | awk '{print $1}')
-          RAW=$(docker buildx imagetools inspect "${MANIFEST_TAG}" --raw 2>/dev/null || true)
-          if [ -z "${RAW}" ]; then
-            echo "Failed to inspect manifest ${MANIFEST_TAG}" >&2
-            exit 1
-          fi
-          DIGEST=$(echo "${RAW}" | jq -r '.Descriptor.digest // .descriptor.digest // .manifests[0].digest // .Digest' | head -n1)
-          if [ -z "${DIGEST}" ] || [ "${DIGEST}" = "null" ]; then
-            echo "Unable to determine manifest digest for ${MANIFEST_TAG}" >&2
-            exit 1
-          fi
-          echo "manifest_digest=${DIGEST}" >> $GITHUB_OUTPUT
-          echo "manifest_tag=${MANIFEST_TAG}" >> $GITHUB_OUTPUT
-          echo "manifest_tags=${TAGS}" >> $GITHUB_OUTPUT
-          echo "✅ DockerHub manifest created with tags: ${TAGS}"
-          echo "Manifest digest: ${DIGEST}"
 
       # SBOM Strategy:
       # Generate SBOM once from GHCR (images are identical in both registries)
@@ -418,15 +418,17 @@ jobs:
       # - DockerHub: Uses Cosign (industry standard, universal support)
 
       - name: Generate SBOM (single source of truth)
+        if: steps.digests.outputs.ghcr_digest != ''
         id: generate-sbom
         uses: anchore/sbom-action@fbfd9c6c189226748411491745178e0c2017392d # v0.20.10
         with:
-          image: ${{ steps.manifest-ghcr.outputs.manifest_tag }}
+          image: ${{ steps.digests.outputs.ghcr_image }}@${{ steps.digests.outputs.ghcr_digest }}
           format: 'spdx-json'
           output-file: 'sbom-${{ matrix.version }}.spdx.json'
           artifact-name: 'sbom-${{ matrix.version }}'
 
       - name: Generate build provenance (single source of truth)
+        if: steps.digests.outputs.ghcr_digest != ''
         id: generate-provenance
         run: |
           # Create SLSA v1.0 provenance (custom predicate type allows any valid JSON)
@@ -474,11 +476,12 @@ jobs:
           echo "✅ SLSA v1.0 provenance generated for both registries"
 
       - name: Attest SBOM for GHCR (GitHub native attestations)
+        if: steps.digests.outputs.ghcr_digest != ''
         id: attest-sbom-ghcr
         uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
         with:
           subject-name: ${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
-          subject-digest: ${{ steps.manifest-ghcr.outputs.manifest_digest }}
+          subject-digest: ${{ steps.digests.outputs.ghcr_digest }}
           sbom-path: 'sbom-${{ matrix.version }}.spdx.json'
           push-to-registry: true
           show-summary: true
@@ -486,46 +489,44 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Attest build provenance for GHCR (GitHub native attestations)
+        if: steps.digests.outputs.ghcr_digest != ''
         id: attest-provenance-ghcr
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-name: ${{ env.GHCR_REGISTRY }}/${{ needs.detect-versions.outputs.image_name }}
-          subject-digest: ${{ steps.manifest-ghcr.outputs.manifest_digest }}
+          subject-digest: ${{ steps.digests.outputs.ghcr_digest }}
           push-to-registry: true
           show-summary: true
 
       - name: Install Cosign
+        if: steps.digests.outputs.dockerhub_digest != ''
         uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
 
       - name: Sign DockerHub images with Cosign
-        env:
-          DIGEST: ${{ steps.manifest-dockerhub.outputs.manifest_digest }}
-          TAGS: ${{ steps.manifest-dockerhub.outputs.manifest_tags }}
+        if: steps.digests.outputs.dockerhub_digest != ''
         run: |
-          # Sign all DockerHub tags using keyless signing
-          images=""
-          for tag in ${TAGS}; do
-            images+="${tag}@${DIGEST} "
-          done
-          echo "Signing DockerHub images: ${images}"
-          cosign sign --yes ${images}
-          echo "✅ DockerHub images signed successfully!"
+          # Sign DockerHub image using keyless signing
+          echo "Signing DockerHub image: ${{ steps.digests.outputs.dockerhub_image }}@${{ steps.digests.outputs.dockerhub_digest }}"
+          cosign sign --yes ${{ steps.digests.outputs.dockerhub_image }}@${{ steps.digests.outputs.dockerhub_digest }}
+          echo "✅ DockerHub image signed successfully!"
 
       - name: Attest SBOM for DockerHub with Cosign
+        if: steps.digests.outputs.dockerhub_digest != ''
         run: |
           # Attach SBOM attestation - reuses SBOM generated earlier
           cosign attest --yes --type spdxjson \
             --predicate sbom-${{ matrix.version }}.spdx.json \
-            ${{ steps.manifest-dockerhub.outputs.manifest_tag }}@${{ steps.manifest-dockerhub.outputs.manifest_digest }}
+            ${{ steps.digests.outputs.dockerhub_image }}@${{ steps.digests.outputs.dockerhub_digest }}
           echo "✅ SBOM attestation attached to DockerHub image"
 
       - name: Attest build provenance for DockerHub with Cosign
+        if: steps.digests.outputs.dockerhub_digest != ''
         run: |
           # Attach build provenance attestation - reuses provenance generated earlier
           # Use custom predicate type for SLSA v1.0+ compatibility
           cosign attest --yes --type https://slsa.dev/provenance/v1 \
             --predicate provenance-${{ matrix.version }}.json \
-            ${{ steps.manifest-dockerhub.outputs.manifest_tag }}@${{ steps.manifest-dockerhub.outputs.manifest_digest }}
+            ${{ steps.digests.outputs.dockerhub_image }}@${{ steps.digests.outputs.dockerhub_digest }}
           echo "✅ Build provenance attestation attached to DockerHub image"
 
       # Security Scanning Strategy:
@@ -535,11 +536,12 @@ jobs:
       # BLOCKING: Fails the build if HIGH or CRITICAL vulnerabilities are found
 
       - name: Run Snyk Container Scan (Blocking)
+        if: steps.digests.outputs.ghcr_digest != ''
         id: snyk-scan
         uses: snyk/actions/docker@9adf32b1121593767fc3c057af55b55db032dc04 # master
         continue-on-error: true
         with:
-          image: ${{ steps.manifest-ghcr.outputs.manifest_tag }}@${{ steps.manifest-ghcr.outputs.manifest_digest }}
+          image: ${{ steps.digests.outputs.ghcr_image }}@${{ steps.digests.outputs.ghcr_digest }}
           args: --severity-threshold=high --sarif-file-output=snyk-${{ matrix.version }}.sarif --json-file-output=snyk-${{ matrix.version }}.json
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -591,7 +593,7 @@ jobs:
           fi
 
   test-images:
-    needs: [detect-versions, create-manifest]
+    needs: [detect-versions, attest-and-scan]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
@@ -904,7 +906,7 @@ jobs:
           echo "- Security & Permissions" >> $GITHUB_STEP_SUMMARY
 
   export-build-metadata:
-    needs: [detect-versions, create-manifest]
+    needs: [detect-versions, attest-and-scan]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     
@@ -1088,7 +1090,7 @@ jobs:
           echo "- [Docker Hub](https://hub.docker.com/r/${{ needs.detect-versions.outputs.image_name }})" >> $GITHUB_STEP_SUMMARY
 
   cleanup-digest-refs:
-    needs: [detect-versions, build-and-push, create-manifest]
+    needs: [detect-versions, build-and-push, attest-and-scan]
     if: always() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     
