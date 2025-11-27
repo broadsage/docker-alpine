@@ -40,22 +40,22 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       versions: ${{ steps.get-versions.outputs.versions }}
-      image_name: ${{ steps.set-image-name.outputs.image_name }}
+      image_name: ${{ steps.compute.outputs.result }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Setup Dagger
-        uses: dagger/dagger-for-github@v6
-
       - name: Compute image name
-        id: set-image-name
-        run: |
-          IMAGE_NAME=$(dagger call -m github.com/broadsage/dagger-modules/modules/github@main \
+        id: compute
+        uses: dagger/dagger-for-github@v6
+        with:
+          version: "latest"
+          verb: call
+          module: github.com/broadsage/dagger-modules/modules/github@main
+          args: |
             compute-image-name \
-            --repo-owner=${{ github.repository_owner }} \
-            --repo-name=${{ github.event.repository.name }})
-          echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+              --repo-owner=${{ github.repository_owner }} \
+              --repo-name=${{ github.event.repository.name }}
 
       - name: Detect Alpine versions
         id: get-versions
