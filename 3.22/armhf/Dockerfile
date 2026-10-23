@@ -1,3 +1,3 @@
 FROM scratch
-ADD alpine-minirootfs-3.22.5-armhf.tar.gz /
+ADD alpine-minirootfs-3.22.7-armhf.tar.gz /
 CMD ["/bin/sh"]
