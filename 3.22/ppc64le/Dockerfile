@@ -1,3 +1,3 @@
 FROM scratch
-ADD alpine-minirootfs-3.22.5-ppc64le.tar.gz /
+ADD alpine-minirootfs-3.22.7-ppc64le.tar.gz /
 CMD ["/bin/sh"]
