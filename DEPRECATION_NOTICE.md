@@ -3,6 +3,8 @@
 The following Alpine Linux versions have reached their End of Life (EOL) date:
 
 - **Alpine 3.19** - EOL: 2025-11-01
+- **Alpine 3.20** - EOL: 2026-04-01
+- **Alpine 3.21** - EOL: 2026-11-01
 
 These versions are no longer receiving security updates from the Alpine Linux project.
 
